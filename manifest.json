@@ -1,0 +1,28 @@
+{
+  "name": "bitburner-bot-advanced",
+  "version": "0.1.0",
+  "entry": "/bb/daemon/supervisor.js",
+  "baseUrl": "./",
+  "files": [
+    {
+      "path": "/bb/daemon/supervisor.js",
+      "source": "bb/daemon/supervisor.js"
+    },
+    {
+      "path": "/bb/daemon/early-hack.js",
+      "source": "bb/daemon/early-hack.js"
+    },
+    {
+      "path": "/bb/workers/hack.js",
+      "source": "bb/workers/hack.js"
+    },
+    {
+      "path": "/bb/workers/grow.js",
+      "source": "bb/workers/grow.js"
+    },
+    {
+      "path": "/bb/workers/weaken.js",
+      "source": "bb/workers/weaken.js"
+    }
+  ]
+}
