@@ -1,6 +1,5 @@
 const STATE_FILE = "/bb/data/cloud-hosts-state.json";
 const SERVER_PREFIX = "bb-cloud-";
-const MAX_SERVER_RAM = 2 ** 20;
 
 export async function main(ns) {
   ns.disableLog("ALL");
@@ -42,13 +41,14 @@ function parseArgs(rawArgs) {
 }
 
 function manageCloudHosts(ns, options) {
-  const purchased = ns.getPurchasedServers();
+  const purchased = ns.cloud.getServerNames();
   const sizes = purchased.map((host) => ({ host, ram: ns.getServerMaxRam(host) }));
   const priorState = readState(ns);
   const largestCurrentRam = sizes.reduce((largest, server) => Math.max(largest, server.ram), 0);
   const purchaseFloorGb = Math.max(options.minSizeGb, priorState.lastPurchasedRamGb || 0, largestCurrentRam);
   const availableMoney = Math.max(0, ns.getServerMoneyAvailable("home") - options.moneyBuffer);
-  const limit = ns.getPurchasedServerLimit();
+  const limit = ns.cloud.getServerLimit();
+  const maxServerRam = ns.cloud.getRamLimit();
   const result = {
     action: "waiting",
     availableMoney,
@@ -61,16 +61,16 @@ function manageCloudHosts(ns, options) {
   };
 
   if (purchased.length < limit) {
-    const ram = largestAffordableRam(ns, purchaseFloorGb, availableMoney);
+    const ram = largestAffordableRam(purchaseFloorGb, maxServerRam, availableMoney, (candidateRam) => ns.cloud.getServerCost(candidateRam));
     if (ram <= 0) return result;
 
     const hostname = nextHostname(ns);
-    const purchasedHost = ns.purchaseServer(hostname, ram);
+    const purchasedHost = ns.cloud.purchaseServer(hostname, ram);
     if (purchasedHost) {
       result.action = "purchased";
       result.host = purchasedHost;
       result.ramGb = ram;
-      result.cost = ns.getPurchasedServerCost(ram);
+      result.cost = ns.cloud.getServerCost(ram);
       result.lastPurchasedRamGb = Math.max(result.lastPurchasedRamGb, ram);
       result.purchased.push({ host: purchasedHost, ram });
     }
@@ -81,8 +81,14 @@ function manageCloudHosts(ns, options) {
   if (!smallest) return result;
 
   const upgradeFloorGb = Math.max(purchaseFloorGb, nextPowerOfTwo(smallest.ram * 2));
-  const ram = largestAffordableRam(ns, upgradeFloorGb, availableMoney);
+  const ram = largestAffordableRam(
+    upgradeFloorGb,
+    maxServerRam,
+    availableMoney,
+    (candidateRam) => ns.cloud.getServerUpgradeCost(smallest.host, candidateRam),
+  );
   if (ram <= smallest.ram) return result;
+  const upgradeCost = ns.cloud.getServerUpgradeCost(smallest.host, ram);
 
   if (ns.ps(smallest.host).length > 0) {
     result.action = "draining";
@@ -90,12 +96,12 @@ function manageCloudHosts(ns, options) {
     return result;
   }
 
-  const upgraded = ns.upgradePurchasedServer(smallest.host, ram);
+  const upgraded = ns.cloud.upgradeServer(smallest.host, ram);
   if (upgraded) {
     result.action = "upgraded";
     result.host = smallest.host;
     result.ramGb = ram;
-    result.cost = ns.getPurchasedServerCost(ram);
+    result.cost = upgradeCost;
     result.lastPurchasedRamGb = Math.max(result.lastPurchasedRamGb, ram);
     result.purchased = result.purchased.map((server) => server.host === smallest.host ? { ...server, ram } : server);
   }
@@ -113,17 +119,21 @@ function selectUpgradeCandidate(ns, sizes, drainingHost) {
     .sort((a, b) => a.ram - b.ram || a.host.localeCompare(b.host))[0] || null;
 }
 
-function largestAffordableRam(ns, minimumRam, availableMoney) {
+function largestAffordableRam(minimumRam, maxServerRam, availableMoney, getCost) {
   const floor = nextPowerOfTwo(minimumRam);
-  if (floor > MAX_SERVER_RAM || ns.getPurchasedServerCost(floor) > availableMoney) return 0;
+  if (floor > maxServerRam || !isAffordable(getCost(floor), availableMoney)) return 0;
 
   let affordableRam = floor;
-  for (let ram = floor * 2; ram <= MAX_SERVER_RAM; ram *= 2) {
-    if (ns.getPurchasedServerCost(ram) > availableMoney) break;
+  for (let ram = floor * 2; ram <= maxServerRam; ram *= 2) {
+    if (!isAffordable(getCost(ram), availableMoney)) break;
     affordableRam = ram;
   }
 
   return affordableRam;
+}
+
+function isAffordable(cost, availableMoney) {
+  return Number.isFinite(cost) && cost >= 0 && cost <= availableMoney;
 }
 
 function nextHostname(ns) {
@@ -166,7 +176,7 @@ function normalizeRam(value, fallback) {
 
 function nextPowerOfTwo(value) {
   let power = 1;
-  while (power < value && power < MAX_SERVER_RAM) power *= 2;
+  while (power < value) power *= 2;
   return power;
 }
 
