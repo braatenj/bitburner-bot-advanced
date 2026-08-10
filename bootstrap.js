@@ -1,18 +1,13 @@
 const DEFAULT_MANIFEST_TARGET = "/bb/manifest.json";
+const DEFAULT_MANIFEST_URL = "https://raw.githubusercontent.com/braatenj/bitburner-bot-advanced/main/manifest.json";
 
 export async function main(ns) {
   const args = Array.from(ns.args);
-  const manifestUrl = String(args.shift() || "");
+  const manifestUrl = getManifestUrl(args);
   const bootstrapOptions = parseBootstrapOptions(args);
 
   if (ns.getHostname() !== "home") {
     ns.tprint("[bb] Run this bootstrapper from home so downloaded scripts and spawn handoff use the expected host.");
-    return;
-  }
-
-  if (!manifestUrl || manifestUrl.startsWith("--")) {
-    ns.tprint("Usage: run /bootstrap.js https://raw.githubusercontent.com/<owner>/<repo>/<branch>/manifest.json [daemon options]");
-    ns.tprint("Example: run /bootstrap.js https://raw.githubusercontent.com/me/bitburner-bot-advanced/main/manifest.json --target n00dles");
     return;
   }
 
@@ -60,6 +55,12 @@ export async function main(ns) {
   const entry = String(manifest.entry || "/bb/daemon/supervisor.js");
   ns.tprint(`[bb] Spawning ${entry}.`);
   ns.spawn(entry, { threads: 1, spawnDelay: 0 }, ...bootstrapOptions.forwardedArgs);
+}
+
+function getManifestUrl(args) {
+  const firstArg = String(args[0] || "");
+  if (/^https?:\/\//i.test(firstArg)) return String(args.shift());
+  return DEFAULT_MANIFEST_URL;
 }
 
 function parseBootstrapOptions(args) {

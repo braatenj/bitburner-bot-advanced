@@ -4,11 +4,9 @@ Plain JavaScript Bitburner automation scripts. The first milestone is a bootstra
 
 ## Install in Bitburner
 
-Replace `<owner>` and `<repo>` with the public GitHub repository that hosts these files:
-
 ```text
-wget https://raw.githubusercontent.com/<owner>/<repo>/main/bootstrap.js /bootstrap.js
-run /bootstrap.js https://raw.githubusercontent.com/<owner>/<repo>/main/manifest.json
+wget https://raw.githubusercontent.com/braatenj/bitburner-bot-advanced/main/bootstrap.js /bootstrap.js
+run /bootstrap.js
 ```
 
 The bootstrapper downloads `manifest.json`, installs every manifest file to `/bb/...`, and launches `/bb/daemon/supervisor.js`.
@@ -16,8 +14,8 @@ The bootstrapper downloads `manifest.json`, installs every manifest file to `/bb
 ## Useful Launch Options
 
 ```text
-run /bootstrap.js https://raw.githubusercontent.com/<owner>/<repo>/main/manifest.json --target n00dles
-run /bootstrap.js https://raw.githubusercontent.com/<owner>/<repo>/main/manifest.json --reserve-home 4
+run /bootstrap.js --target n00dles
+run /bootstrap.js --reserve-home 4
 run /bb/daemon/supervisor.js --watch
 ```
 
