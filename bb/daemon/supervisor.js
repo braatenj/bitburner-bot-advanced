@@ -1,4 +1,5 @@
 const CONTEXT_FILE = "/bb/data/context.json";
+const CLOUD_HOSTS_DAEMON = "/bb/daemon/cloud-hosts.js";
 const EARLY_HACK_DAEMON = "/bb/daemon/early-hack.js";
 
 export async function main(ns) {
@@ -12,29 +13,20 @@ export async function main(ns) {
     ns.tprint(`[bb] BitNode ${context.bitNode}; source files: ${formatSourceFiles(context.sourceFiles) || "none active"}`);
   }
 
-  if (options.noEarlyHack) {
-    ns.tprint("[bb] Early hacking daemon disabled by --no-early-hack.");
+  const services = buildServices(options);
+  if (!options.watch) {
+    spawnServices(ns, services);
     return;
   }
 
-  const daemonArgs = buildEarlyHackArgs(options);
-  if (!options.watch) {
-    if (ns.scriptRunning(EARLY_HACK_DAEMON, "home")) {
-      ns.tprint(`[bb] ${EARLY_HACK_DAEMON} is already running.`);
-      return;
-    }
-
-    ns.tprint(`[bb] Spawning ${EARLY_HACK_DAEMON}.`);
-    ns.spawn(EARLY_HACK_DAEMON, { threads: 1, spawnDelay: 0 }, ...daemonArgs);
-  }
-
   while (true) {
-    if (!ns.scriptRunning(EARLY_HACK_DAEMON, "home")) {
-      const pid = ns.exec(EARLY_HACK_DAEMON, "home", 1, ...daemonArgs);
+    for (const service of services) {
+      if (ns.scriptRunning(service.script, "home")) continue;
+      const pid = ns.exec(service.script, "home", 1, ...service.args);
       if (pid === 0) {
-        ns.print(`[bb] Failed to start ${EARLY_HACK_DAEMON}; waiting for RAM.`);
+        ns.print(`[bb] Failed to start ${service.script}; waiting for RAM.`);
       } else {
-        ns.tprint(`[bb] Started ${EARLY_HACK_DAEMON} with pid ${pid}.`);
+        ns.tprint(`[bb] Started ${service.script} with pid ${pid}.`);
       }
     }
 
@@ -47,9 +39,13 @@ export async function main(ns) {
 function parseArgs(rawArgs) {
   const options = {
     batchGap: "",
+    cloudMinSize: "",
+    cloudMoneyBuffer: "",
+    cloudPoll: "",
     context: CONTEXT_FILE,
     loopDelay: "",
     moneyBuffer: "",
+    noCloudHosts: false,
     noEarlyHack: false,
     pollMs: 60000,
     prepMoneyRatio: "",
@@ -66,10 +62,14 @@ function parseArgs(rawArgs) {
   for (let i = 0; i < rawArgs.length; i += 1) {
     const arg = String(rawArgs[i]);
     if (arg === "--batch-gap") options.batchGap = readArg(rawArgs, ++i, "");
+    else if (arg === "--cloud-min-size") options.cloudMinSize = readArg(rawArgs, ++i, "");
+    else if (arg === "--cloud-money-buffer") options.cloudMoneyBuffer = readArg(rawArgs, ++i, "");
+    else if (arg === "--cloud-poll") options.cloudPoll = readArg(rawArgs, ++i, "");
     else if (arg === "--context") options.context = readArg(rawArgs, ++i, CONTEXT_FILE);
     else if (arg === "--loop-delay") options.loopDelay = readArg(rawArgs, ++i, "");
     else if (arg === "--money-buffer") options.moneyBuffer = readArg(rawArgs, ++i, "");
     else if (arg === "--no-early-hack") options.noEarlyHack = true;
+    else if (arg === "--no-cloud-hosts") options.noCloudHosts = true;
     else if (arg === "--poll") options.pollMs = parsePollMs(rawArgs[++i], options.pollMs);
     else if (arg === "--prep-money-ratio") options.prepMoneyRatio = readArg(rawArgs, ++i, "");
     else if (arg === "--prep-ram-max") options.prepRamMax = readArg(rawArgs, ++i, "");
@@ -85,6 +85,31 @@ function parseArgs(rawArgs) {
   return options;
 }
 
+function buildServices(options) {
+  const services = [];
+  if (!options.noEarlyHack) services.push({ script: EARLY_HACK_DAEMON, args: buildEarlyHackArgs(options) });
+  if (!options.noCloudHosts) services.push({ script: CLOUD_HOSTS_DAEMON, args: buildCloudHostsArgs(options) });
+  return services;
+}
+
+function spawnServices(ns, services) {
+  const pending = services.filter((service) => !ns.scriptRunning(service.script, "home"));
+  if (pending.length === 0) {
+    ns.tprint("[bb] All enabled daemons are already running.");
+    return;
+  }
+
+  const finalService = pending.pop();
+  for (const service of pending) {
+    const pid = ns.exec(service.script, "home", 1, ...service.args);
+    if (pid === 0) ns.tprint(`[bb] Could not start ${service.script}; insufficient home RAM.`);
+    else ns.tprint(`[bb] Started ${service.script} with pid ${pid}.`);
+  }
+
+  ns.tprint(`[bb] Spawning ${finalService.script}.`);
+  ns.spawn(finalService.script, { threads: 1, spawnDelay: 0 }, ...finalService.args);
+}
+
 function buildEarlyHackArgs(options) {
   const args = ["--context", options.context, "--reserve-home", String(options.reserveHome)];
   appendOption(args, "--batch-gap", options.batchGap);
@@ -96,6 +121,15 @@ function buildEarlyHackArgs(options) {
   appendOption(args, "--prep-ram-pct", options.prepRamPct);
   appendOption(args, "--prep-security-buffer", options.prepSecurityBuffer);
   if (options.target) args.push("--target", options.target);
+  if (options.quiet) args.push("--quiet");
+  return args;
+}
+
+function buildCloudHostsArgs(options) {
+  const args = [];
+  appendOption(args, "--cloud-min-size", options.cloudMinSize);
+  appendOption(args, "--cloud-money-buffer", options.cloudMoneyBuffer);
+  appendOption(args, "--cloud-poll", options.cloudPoll);
   if (options.quiet) args.push("--quiet");
   return args;
 }

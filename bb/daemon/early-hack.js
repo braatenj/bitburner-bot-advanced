@@ -2,6 +2,7 @@ const HACK_WORKER = "/bb/workers/hack.js";
 const GROW_WORKER = "/bb/workers/grow.js";
 const WEAKEN_WORKER = "/bb/workers/weaken.js";
 const WORKERS = [HACK_WORKER, GROW_WORKER, WEAKEN_WORKER];
+const CLOUD_HOSTS_STATE_FILE = "/bb/data/cloud-hosts-state.json";
 const STATE_FILE = "/bb/data/early-hack-state.json";
 
 const HACK_SECURITY_PER_THREAD = 0.002;
@@ -23,7 +24,7 @@ export async function main(ns) {
     }
 
     const homeReserve = resolveHomeReserve(ns, options.reserveHome);
-    const fleet = buildFleet(ns, rooted, homeReserve);
+    const fleet = buildFleet(ns, rooted, homeReserve, getDrainingHosts(ns));
     const totalFreeRam = sumFleetRam(fleet);
     const prepReserveRam = resolvePrepRamReserve(totalFreeRam, options);
     const incomeRamBudget = Math.max(0, totalFreeRam - prepReserveRam);
@@ -202,10 +203,11 @@ function tryRoot(ns, server) {
   return ns.hasRootAccess(server);
 }
 
-function buildFleet(ns, rootedServers, homeReserve) {
+function buildFleet(ns, rootedServers, homeReserve, drainingHosts) {
   const fleet = [];
 
   for (const host of rootedServers) {
+    if (drainingHosts.has(host)) continue;
     const maxRam = ns.getServerMaxRam(host);
     if (maxRam <= 0) continue;
 
@@ -227,6 +229,15 @@ function buildFleet(ns, rootedServers, homeReserve) {
   });
 
   return fleet;
+}
+
+function getDrainingHosts(ns) {
+  try {
+    const state = JSON.parse(ns.read(CLOUD_HOSTS_STATE_FILE));
+    return state.drainingHost ? new Set([String(state.drainingHost)]) : new Set();
+  } catch (_error) {
+    return new Set();
+  }
 }
 
 function sumFleetRam(fleet) {

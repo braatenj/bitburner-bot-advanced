@@ -13,6 +13,10 @@
       "source": "bb/daemon/early-hack.js"
     },
     {
+      "path": "/bb/daemon/cloud-hosts.js",
+      "source": "bb/daemon/cloud-hosts.js"
+    },
+    {
       "path": "/bb/workers/hack.js",
       "source": "bb/workers/hack.js"
     },

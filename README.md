@@ -16,12 +16,15 @@ The bootstrapper downloads `manifest.json`, installs every manifest file to `/bb
 ```text
 run /bootstrap.js --target n00dles
 run /bootstrap.js --reserve-home 4
+run /bootstrap.js --cloud-min-size 32 --cloud-money-buffer 1000000000
 run /bb/daemon/supervisor.js --watch
 ```
 
+`--cloud-min-size` sets the smallest purchased-server tier in GB. `--cloud-money-buffer` reserves that amount of cash before the cloud-host daemon purchases or upgrades servers. Purchases never drop below the largest tier it has already purchased.
+
 - `--target <server>` forces the early hacking daemon to use a specific money server when it is rootable and hackable.
 - `--reserve-home <gb>` keeps home RAM free. The default `auto` reserve uses `0GB` on an 8GB home server.
-- `--watch` keeps the supervisor alive to restart the early hacking daemon if it exits. The default supervisor mode records context, spawns the daemon, and exits so early-game RAM stays available.
+- `--watch` keeps the supervisor alive to restart the hacking and cloud-host daemons if either exits. The default supervisor mode starts both daemons and exits so early-game RAM stays available.
 
 ## Current Scope
 
