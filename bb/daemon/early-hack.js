@@ -37,17 +37,17 @@ export async function main(ns) {
     if (primary && isPrepped(ns, primary.server, options)) {
       primaryLaunch = await scheduleHackBatches(ns, fleet, primary, incomeRamBudget, options);
     } else if (primary) {
-      primaryLaunch = await schedulePrep(ns, fleet, primary.server, incomeRamBudget, options, formulaContext, "primary");
+      primaryLaunch = await schedulePrep(ns, fleet, rooted, primary.server, incomeRamBudget, options, formulaContext, "primary");
     }
 
     let secondaryLaunch = emptyLaunch("secondary");
     if (secondary) {
-      secondaryLaunch = await schedulePrep(ns, fleet, secondary.server, sumFleetRam(fleet), options, formulaContext, "secondary");
+      secondaryLaunch = await schedulePrep(ns, fleet, rooted, secondary.server, sumFleetRam(fleet), options, formulaContext, "secondary");
     }
 
     const status = buildStatus(rooted, servers, totalFreeRam, prepReserveRam, formulaContext, primary, secondary, primaryLaunch, secondaryLaunch);
     if (!options.quiet && status !== lastStatus) {
-      ns.tprint(`[bb:hack] ${status}`);
+      ns.print(`[bb:hack] ${status}`);
       printManualHints(ns, rooted.length, servers.length);
       lastStatus = status;
     }
@@ -541,7 +541,7 @@ async function scheduleHackBatches(ns, fleet, evaluation, budgetRam, options) {
   return launched;
 }
 
-async function schedulePrep(ns, fleet, target, budgetRam, options, formulaContext, label) {
+async function schedulePrep(ns, fleet, rootedServers, target, budgetRam, options, formulaContext, label) {
   const budget = { remaining: Math.max(0, budgetRam) };
   const plan = buildPrepPlan(ns, target, budget.remaining, options, formulaContext);
   const launched = {
@@ -555,8 +555,14 @@ async function schedulePrep(ns, fleet, target, budgetRam, options, formulaContex
     status: plan.status,
   };
 
+  if (plan.status === "full-cycle" && hasActiveFullPrepBatch(ns, rootedServers, target)) {
+    launched.status = "waiting-for-full-cycle";
+    return launched;
+  }
+
+  const batchType = plan.status === "full-cycle" ? "prep-full" : "prep-partial";
+  const batchId = `${batchType}-${label}-${Date.now()}-${target}`;
   for (const task of plan.tasks) {
-    const batchId = `${Date.now()}-${label}-${task.kind}-${target}`;
     const result = await deployTask(ns, fleet, task.worker, target, task.threads, batchId, task.additionalMsec, budget);
     launched.launchedProcesses += result.processes;
     launched.launchedThreads += result.threads;
@@ -565,6 +571,17 @@ async function schedulePrep(ns, fleet, target, budgetRam, options, formulaContex
 
   launched.ramUsedGb = roundRam(launched.ramUsedGb);
   return launched;
+}
+
+function hasActiveFullPrepBatch(ns, rootedServers, target) {
+  for (const host of rootedServers) {
+    for (const process of ns.ps(host)) {
+      if (String(process.args[0] || "") !== target) continue;
+      if (String(process.args[1] || "").startsWith("prep-full-")) return true;
+    }
+  }
+
+  return false;
 }
 
 function buildPrepPlan(ns, target, budgetRam, options, formulaContext) {
@@ -872,11 +889,11 @@ function printManualHints(ns, rootedCount, knownCount) {
   if (!ns.fileExists("SQLInject.exe", "home")) missingPrograms.push("SQLInject.exe");
 
   if (missingPrograms.length > 0) {
-    ns.tprint(`[bb:hack] Manual unlocks still useful: ${missingPrograms.join(", ")}`);
+    ns.print(`[bb:hack] Manual unlocks still useful: ${missingPrograms.join(", ")}`);
   }
 
   if (rootedCount < knownCount) {
-    ns.tprint(`[bb:hack] Rooted ${rootedCount}/${knownCount}; buying or creating port programs expands the fleet.`);
+    ns.print(`[bb:hack] Rooted ${rootedCount}/${knownCount}; buying or creating port programs expands the fleet.`);
   }
 }
 
