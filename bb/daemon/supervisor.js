@@ -46,9 +46,17 @@ export async function main(ns) {
 
 function parseArgs(rawArgs) {
   const options = {
+    batchGap: "",
     context: CONTEXT_FILE,
+    loopDelay: "",
+    moneyBuffer: "",
     noEarlyHack: false,
     pollMs: 60000,
+    prepMoneyRatio: "",
+    prepRamMax: "",
+    prepRamMin: "",
+    prepRamPct: "",
+    prepSecurityBuffer: "",
     quiet: false,
     reserveHome: "auto",
     target: "",
@@ -57,12 +65,20 @@ function parseArgs(rawArgs) {
 
   for (let i = 0; i < rawArgs.length; i += 1) {
     const arg = String(rawArgs[i]);
-    if (arg === "--context") options.context = String(rawArgs[++i] || CONTEXT_FILE);
+    if (arg === "--batch-gap") options.batchGap = readArg(rawArgs, ++i, "");
+    else if (arg === "--context") options.context = readArg(rawArgs, ++i, CONTEXT_FILE);
+    else if (arg === "--loop-delay") options.loopDelay = readArg(rawArgs, ++i, "");
+    else if (arg === "--money-buffer") options.moneyBuffer = readArg(rawArgs, ++i, "");
     else if (arg === "--no-early-hack") options.noEarlyHack = true;
     else if (arg === "--poll") options.pollMs = parsePollMs(rawArgs[++i], options.pollMs);
+    else if (arg === "--prep-money-ratio") options.prepMoneyRatio = readArg(rawArgs, ++i, "");
+    else if (arg === "--prep-ram-max") options.prepRamMax = readArg(rawArgs, ++i, "");
+    else if (arg === "--prep-ram-min") options.prepRamMin = readArg(rawArgs, ++i, "");
+    else if (arg === "--prep-ram-pct") options.prepRamPct = readArg(rawArgs, ++i, "");
+    else if (arg === "--prep-security-buffer") options.prepSecurityBuffer = readArg(rawArgs, ++i, "");
     else if (arg === "--quiet") options.quiet = true;
-    else if (arg === "--reserve-home") options.reserveHome = String(rawArgs[++i] || "auto");
-    else if (arg === "--target") options.target = String(rawArgs[++i] || "");
+    else if (arg === "--reserve-home") options.reserveHome = readArg(rawArgs, ++i, "auto");
+    else if (arg === "--target") options.target = readArg(rawArgs, ++i, "");
     else if (arg === "--watch") options.watch = true;
   }
 
@@ -71,9 +87,26 @@ function parseArgs(rawArgs) {
 
 function buildEarlyHackArgs(options) {
   const args = ["--context", options.context, "--reserve-home", String(options.reserveHome)];
+  appendOption(args, "--batch-gap", options.batchGap);
+  appendOption(args, "--loop-delay", options.loopDelay);
+  appendOption(args, "--money-buffer", options.moneyBuffer);
+  appendOption(args, "--prep-money-ratio", options.prepMoneyRatio);
+  appendOption(args, "--prep-ram-max", options.prepRamMax);
+  appendOption(args, "--prep-ram-min", options.prepRamMin);
+  appendOption(args, "--prep-ram-pct", options.prepRamPct);
+  appendOption(args, "--prep-security-buffer", options.prepSecurityBuffer);
   if (options.target) args.push("--target", options.target);
   if (options.quiet) args.push("--quiet");
   return args;
+}
+
+function appendOption(args, name, value) {
+  if (value !== "") args.push(name, String(value));
+}
+
+function readArg(rawArgs, index, fallback) {
+  if (index >= rawArgs.length || rawArgs[index] === undefined) return fallback;
+  return String(rawArgs[index]);
 }
 
 function parsePollMs(value, fallback) {

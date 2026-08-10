@@ -4,6 +4,10 @@ const WEAKEN_WORKER = "/bb/workers/weaken.js";
 const WORKERS = [HACK_WORKER, GROW_WORKER, WEAKEN_WORKER];
 const STATE_FILE = "/bb/data/early-hack-state.json";
 
+const HACK_SECURITY_PER_THREAD = 0.002;
+const GROW_SECURITY_PER_THREAD = 0.004;
+const MIN_MONEY = 1;
+
 export async function main(ns) {
   ns.disableLog("ALL");
 
@@ -18,12 +22,29 @@ export async function main(ns) {
       if (tryRoot(ns, server)) rooted.push(server);
     }
 
-    const target = chooseTarget(ns, rooted, options.target);
-    const action = chooseAction(ns, target);
-    const worker = workerForAction(action);
-    const launched = deployWork(ns, rooted, worker, target, resolveHomeReserve(ns, options.reserveHome));
+    const homeReserve = resolveHomeReserve(ns, options.reserveHome);
+    const fleet = buildFleet(ns, rooted, homeReserve);
+    const totalFreeRam = sumFleetRam(fleet);
+    const prepReserveRam = resolvePrepRamReserve(totalFreeRam, options);
+    const incomeRamBudget = Math.max(0, totalFreeRam - prepReserveRam);
+    const formulaContext = getFormulaContext(ns);
+    const evaluations = evaluateTargets(ns, rooted, incomeRamBudget, options, formulaContext);
+    const primary = choosePrimaryEvaluation(evaluations, options.target);
+    const secondary = chooseSecondaryPrepEvaluation(ns, evaluations, primary, options);
 
-    const status = `${action}:${target}:rooted=${rooted.length}:threads=${launched}`;
+    let primaryLaunch = emptyLaunch("primary");
+    if (primary && isPrepped(ns, primary.server, options)) {
+      primaryLaunch = await scheduleHackBatches(ns, fleet, primary, incomeRamBudget, options);
+    } else if (primary) {
+      primaryLaunch = await schedulePrep(ns, fleet, primary.server, incomeRamBudget, options, formulaContext, "primary");
+    }
+
+    let secondaryLaunch = emptyLaunch("secondary");
+    if (secondary) {
+      secondaryLaunch = await schedulePrep(ns, fleet, secondary.server, sumFleetRam(fleet), options, formulaContext, "secondary");
+    }
+
+    const status = buildStatus(rooted, servers, totalFreeRam, prepReserveRam, formulaContext, primary, secondary, primaryLaunch, secondaryLaunch);
     if (!options.quiet && status !== lastStatus) {
       ns.tprint(`[bb:hack] ${status}`);
       printManualHints(ns, rooted.length, servers.length);
@@ -32,24 +53,42 @@ export async function main(ns) {
 
     writeState(ns, {
       updatedAt: Date.now(),
-      target,
-      action,
+      formulas: formulaContext.enabled,
       knownServers: servers.length,
       rootedServers: rooted.length,
-      launchedThreads: launched,
-      homeRam: {
-        max: ns.getServerMaxRam("home"),
-        used: ns.getServerUsedRam("home"),
+      ram: {
+        freeGb: roundRam(totalFreeRam),
+        incomeBudgetGb: roundRam(incomeRamBudget),
+        prepReserveGb: roundRam(prepReserveRam),
+        homeReserveGb: roundRam(homeReserve),
+        homeMaxGb: ns.getServerMaxRam("home"),
+        homeUsedGb: roundRam(ns.getServerUsedRam("home")),
       },
+      primary: summarizeEvaluation(primary),
+      secondaryPrep: summarizeEvaluation(secondary),
+      launched: {
+        primary: primaryLaunch,
+        secondary: secondaryLaunch,
+      },
+      topTargets: evaluations.slice(0, 10).map(summarizeEvaluation),
+      options: summarizeOptions(options),
     });
 
-    await ns.sleep(5000);
+    await ns.sleep(options.loopDelayMs);
   }
 }
 
 function parseArgs(rawArgs) {
   const options = {
+    batchGapMs: 1000,
     context: "/bb/data/context.json",
+    loopDelayMs: 5000,
+    moneyBuffer: 0.1,
+    prepMoneyRatio: 0.99,
+    prepRamMax: 64,
+    prepRamMin: 0,
+    prepRamPct: 0.1,
+    prepSecurityBuffer: 0.05,
     quiet: false,
     reserveHome: "auto",
     target: "",
@@ -57,13 +96,49 @@ function parseArgs(rawArgs) {
 
   for (let i = 0; i < rawArgs.length; i += 1) {
     const arg = String(rawArgs[i]);
-    if (arg === "--context") options.context = String(rawArgs[++i] || options.context);
+    if (arg === "--batch-gap") options.batchGapMs = parseMs(rawArgs[++i], options.batchGapMs, 100);
+    else if (arg === "--context") options.context = String(rawArgs[++i] || options.context);
+    else if (arg === "--loop-delay") options.loopDelayMs = parseMs(rawArgs[++i], options.loopDelayMs, 1000);
+    else if (arg === "--money-buffer") options.moneyBuffer = parseRatio(rawArgs[++i], options.moneyBuffer, 0, 0.95);
+    else if (arg === "--prep-money-ratio") options.prepMoneyRatio = parseRatio(rawArgs[++i], options.prepMoneyRatio, 0.01, 1);
+    else if (arg === "--prep-ram-max") options.prepRamMax = parseNumber(rawArgs[++i], options.prepRamMax, 0, Number.MAX_SAFE_INTEGER);
+    else if (arg === "--prep-ram-min") options.prepRamMin = parseNumber(rawArgs[++i], options.prepRamMin, 0, Number.MAX_SAFE_INTEGER);
+    else if (arg === "--prep-ram-pct") options.prepRamPct = parseRatio(rawArgs[++i], options.prepRamPct, 0, 1);
+    else if (arg === "--prep-security-buffer") options.prepSecurityBuffer = parseNumber(rawArgs[++i], options.prepSecurityBuffer, 0, Number.MAX_SAFE_INTEGER);
     else if (arg === "--quiet") options.quiet = true;
     else if (arg === "--reserve-home") options.reserveHome = String(rawArgs[++i] || "auto");
     else if (arg === "--target") options.target = String(rawArgs[++i] || "");
   }
 
+  if (options.prepRamMin > options.prepRamMax) {
+    const previousMin = options.prepRamMin;
+    options.prepRamMin = options.prepRamMax;
+    options.prepRamMax = previousMin;
+  }
+
   return options;
+}
+
+function parseMs(value, fallback, minValue) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(minValue, Math.round(parsed));
+}
+
+function parseNumber(value, fallback, minValue, maxValue) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return clamp(parsed, minValue, maxValue);
+}
+
+function parseRatio(value, fallback, minValue, maxValue) {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+
+  let parsed = Number(raw.endsWith("%") ? raw.slice(0, -1) : raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  if (raw.endsWith("%") || parsed > 1) parsed /= 100;
+  return clamp(parsed, minValue, maxValue);
 }
 
 function scanAllServers(ns) {
@@ -127,83 +202,553 @@ function tryRoot(ns, server) {
   return ns.hasRootAccess(server);
 }
 
-function chooseTarget(ns, rootedServers, forcedTarget) {
-  if (forcedTarget && canHackForMoney(ns, forcedTarget)) return forcedTarget;
-
-  let bestServer = "n00dles";
-  let bestScore = 0;
-  const hackingLevel = ns.getHackingLevel();
-
-  for (const server of rootedServers) {
-    if (server === "home") continue;
-    const maxMoney = ns.getServerMaxMoney(server);
-    if (maxMoney <= 0) continue;
-    if (ns.getServerRequiredHackingLevel(server) > hackingLevel) continue;
-
-    const minSecurity = Math.max(1, ns.getServerMinSecurityLevel(server));
-    const hackTime = Math.max(1, ns.getHackTime(server));
-    const score = maxMoney / minSecurity / hackTime;
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestServer = server;
-    }
-  }
-
-  return bestServer;
-}
-
-function canHackForMoney(ns, server) {
-  try {
-    return ns.hasRootAccess(server)
-      && ns.getServerMaxMoney(server) > 0
-      && ns.getServerRequiredHackingLevel(server) <= ns.getHackingLevel();
-  } catch (_error) {
-    return false;
-  }
-}
-
-function chooseAction(ns, target) {
-  const minSecurity = ns.getServerMinSecurityLevel(target);
-  const security = ns.getServerSecurityLevel(target);
-  if (security > minSecurity + 5) return "weaken";
-
-  const maxMoney = ns.getServerMaxMoney(target);
-  const money = ns.getServerMoneyAvailable(target);
-  if (maxMoney <= 0 || money < maxMoney * 0.75) return "grow";
-
-  return "hack";
-}
-
-function workerForAction(action) {
-  if (action === "hack") return HACK_WORKER;
-  if (action === "grow") return GROW_WORKER;
-  return WEAKEN_WORKER;
-}
-
-function deployWork(ns, rootedServers, worker, target, homeReserve) {
-  let launchedThreads = 0;
-  const batchId = Date.now();
+function buildFleet(ns, rootedServers, homeReserve) {
+  const fleet = [];
 
   for (const host of rootedServers) {
     const maxRam = ns.getServerMaxRam(host);
     if (maxRam <= 0) continue;
 
-    if (host !== "home") ns.scp(WORKERS, host, "home");
-
-    const workerRam = ns.getScriptRam(worker, host);
-    if (workerRam <= 0) continue;
-
     const reserve = host === "home" ? homeReserve : 0;
     const freeRam = Math.max(0, maxRam - ns.getServerUsedRam(host) - reserve);
-    const threads = Math.floor(freeRam / workerRam);
-    if (threads < 1) continue;
-
-    const pid = ns.exec(worker, host, threads, target, batchId);
-    if (pid !== 0) launchedThreads += threads;
+    if (freeRam > 0) {
+      fleet.push({
+        host,
+        freeRam,
+        maxRam,
+      });
+    }
   }
 
-  return launchedThreads;
+  fleet.sort((a, b) => {
+    if (a.host === "home" && b.host !== "home") return 1;
+    if (a.host !== "home" && b.host === "home") return -1;
+    return b.freeRam - a.freeRam;
+  });
+
+  return fleet;
+}
+
+function sumFleetRam(fleet) {
+  return fleet.reduce((total, host) => total + host.freeRam, 0);
+}
+
+function resolvePrepRamReserve(totalFreeRam, options) {
+  if (totalFreeRam <= 0) return 0;
+
+  const boundedReserve = clamp(totalFreeRam * options.prepRamPct, options.prepRamMin, options.prepRamMax);
+  return Math.min(totalFreeRam, boundedReserve);
+}
+
+function getFormulaContext(ns) {
+  try {
+    if (!ns.fileExists("Formulas.exe", "home")) return { enabled: false, player: null };
+    if (!ns.formulas || !ns.formulas.hacking) return { enabled: false, player: null };
+    return { enabled: true, player: ns.getPlayer() };
+  } catch (_error) {
+    return { enabled: false, player: null };
+  }
+}
+
+function evaluateTargets(ns, rootedServers, availableRam, options, formulaContext) {
+  const workerRam = getWorkerRam(ns);
+  const hackingLevel = ns.getHackingLevel();
+  const evaluations = [];
+
+  if (workerRam.min <= 0) return evaluations;
+
+  for (const server of rootedServers) {
+    if (server === "home") continue;
+    if (!canHackForMoney(ns, server, hackingLevel)) continue;
+
+    const metrics = getTargetMetrics(ns, server, formulaContext);
+    if (!metrics) continue;
+
+    const batchPlan = chooseBestBatchPlan(ns, metrics, availableRam, options, workerRam, formulaContext);
+    if (!batchPlan) continue;
+
+    evaluations.push({
+      server,
+      batchPlan,
+      expectedMoneyPerSecond: batchPlan.expectedMoneyPerSecond,
+      formulas: metrics.method === "formulas",
+      hackChance: metrics.hackChance,
+      hackTimeMs: metrics.hackTime,
+      growTimeMs: metrics.growTime,
+      weakenTimeMs: metrics.weakenTime,
+      maxMoney: metrics.maxMoney,
+      minSecurity: metrics.minSecurity,
+      prepped: isPrepped(ns, server, options),
+      requiredHackingLevel: ns.getServerRequiredHackingLevel(server),
+    });
+  }
+
+  evaluations.sort((a, b) => b.expectedMoneyPerSecond - a.expectedMoneyPerSecond);
+  return evaluations;
+}
+
+function canHackForMoney(ns, server, hackingLevel) {
+  try {
+    return ns.hasRootAccess(server)
+      && ns.getServerMaxMoney(server) > 0
+      && ns.getServerRequiredHackingLevel(server) <= hackingLevel;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function getTargetMetrics(ns, server, formulaContext) {
+  const maxMoney = ns.getServerMaxMoney(server);
+  const minSecurity = Math.max(1, ns.getServerMinSecurityLevel(server));
+  if (maxMoney <= 0) return null;
+
+  if (formulaContext.enabled) {
+    try {
+      const formulaServer = ns.getServer(server);
+      formulaServer.moneyAvailable = maxMoney;
+      formulaServer.moneyMax = maxMoney;
+      formulaServer.hackDifficulty = minSecurity;
+      formulaServer.minDifficulty = minSecurity;
+
+      const hacking = ns.formulas.hacking;
+      return {
+        method: "formulas",
+        formulaServer,
+        maxMoney,
+        minSecurity,
+        server,
+        hackChance: clamp(hacking.hackChance(formulaServer, formulaContext.player), 0, 1),
+        hackPercent: Math.max(0, hacking.hackPercent(formulaServer, formulaContext.player)),
+        hackTime: Math.max(1, hacking.hackTime(formulaServer, formulaContext.player)),
+        growTime: Math.max(1, hacking.growTime(formulaServer, formulaContext.player)),
+        weakenTime: Math.max(1, hacking.weakenTime(formulaServer, formulaContext.player)),
+      };
+    } catch (_error) {}
+  }
+
+  return {
+    method: "ns",
+    formulaServer: null,
+    maxMoney,
+    minSecurity,
+    server,
+    hackChance: clamp(ns.hackAnalyzeChance(server), 0, 1),
+    hackPercent: Math.max(0, ns.hackAnalyze(server)),
+    hackTime: Math.max(1, ns.getHackTime(server)),
+    growTime: Math.max(1, ns.getGrowTime(server)),
+    weakenTime: Math.max(1, ns.getWeakenTime(server)),
+  };
+}
+
+function chooseBestBatchPlan(ns, metrics, availableRam, options, workerRam, formulaContext) {
+  const maxHackFraction = 1 - options.moneyBuffer;
+  const hackPercent = metrics.hackPercent;
+  if (availableRam <= 0 || maxHackFraction <= 0 || hackPercent <= 0 || metrics.hackChance <= 0) return null;
+
+  const maxHackThreads = Math.floor(maxHackFraction / hackPercent);
+  if (maxHackThreads < 1) return null;
+
+  const weakenPerThread = getWeakenPerThread(ns, formulaContext);
+  if (weakenPerThread <= 0) return null;
+
+  const cycleMs = metrics.weakenTime + options.batchGapMs * 3;
+  const spacingMs = options.batchGapMs * 4;
+  const maxUsefulBatches = Math.max(1, Math.ceil(cycleMs / spacingMs));
+  const candidates = buildHackThreadCandidates(maxHackThreads, hackPercent, maxHackFraction);
+  const visited = new Set();
+  let bestPlan = null;
+
+  const evaluateHackThreads = (rawThreads) => {
+    const hackThreads = Math.floor(rawThreads);
+    if (hackThreads < 1 || hackThreads > maxHackThreads || visited.has(hackThreads)) return;
+    visited.add(hackThreads);
+
+    const hackedFraction = hackThreads * hackPercent;
+    if (hackedFraction <= 0 || hackedFraction > maxHackFraction + 1e-9) return;
+
+    const moneyAfterHack = Math.max(MIN_MONEY, metrics.maxMoney * (1 - hackedFraction));
+    const growThreads = Math.max(1, getGrowThreadsForMoney(ns, metrics, moneyAfterHack, metrics.maxMoney, formulaContext));
+    if (!Number.isFinite(growThreads)) return;
+
+    const hackWeakenThreads = Math.ceil((hackThreads * HACK_SECURITY_PER_THREAD) / weakenPerThread);
+    const growWeakenThreads = Math.ceil((growThreads * GROW_SECURITY_PER_THREAD) / weakenPerThread);
+    const batchRam = hackThreads * workerRam.hack
+      + growThreads * workerRam.grow
+      + (hackWeakenThreads + growWeakenThreads) * workerRam.weaken;
+    if (!Number.isFinite(batchRam) || batchRam <= 0) return;
+
+    const batchCapacity = Math.floor(availableRam / batchRam);
+    if (batchCapacity < 1) return;
+
+    const concurrentBatches = Math.min(batchCapacity, maxUsefulBatches);
+    const batchesPerSecond = Math.min(1000 / spacingMs, (concurrentBatches * 1000) / cycleMs);
+    const expectedMoney = metrics.maxMoney * hackedFraction * metrics.hackChance;
+    const expectedMoneyPerSecond = expectedMoney * batchesPerSecond;
+
+    if (!bestPlan || expectedMoneyPerSecond > bestPlan.expectedMoneyPerSecond) {
+      bestPlan = {
+        batchesPerSecond,
+        batchRam,
+        concurrentBatches,
+        cycleMs,
+        expectedMoney,
+        expectedMoneyPerSecond,
+        growThreads,
+        growWeakenThreads,
+        hackedFraction,
+        hackThreads,
+        hackWeakenThreads,
+        maxUsefulBatches,
+        spacingMs,
+        totalThreads: hackThreads + growThreads + hackWeakenThreads + growWeakenThreads,
+      };
+    }
+  };
+
+  for (const hackThreads of candidates) evaluateHackThreads(hackThreads);
+
+  if (bestPlan) {
+    const start = Math.max(1, bestPlan.hackThreads - 64);
+    const end = Math.min(maxHackThreads, bestPlan.hackThreads + 64);
+    for (let hackThreads = start; hackThreads <= end; hackThreads += 1) evaluateHackThreads(hackThreads);
+  }
+
+  return bestPlan;
+}
+
+function buildHackThreadCandidates(maxHackThreads, hackPercent, maxHackFraction) {
+  const candidates = new Set([1, maxHackThreads]);
+  const exactLimit = Math.min(maxHackThreads, 128);
+
+  for (let threads = 1; threads <= exactLimit; threads += 1) candidates.add(threads);
+  for (let threads = 1; threads <= maxHackThreads; threads *= 2) candidates.add(threads);
+  for (let fraction = 0.005; fraction <= maxHackFraction + 1e-9; fraction += 0.005) {
+    candidates.add(Math.max(1, Math.floor(fraction / hackPercent)));
+  }
+
+  return Array.from(candidates)
+    .filter((threads) => threads >= 1 && threads <= maxHackThreads)
+    .sort((a, b) => a - b);
+}
+
+function getGrowThreadsForMoney(ns, metrics, startingMoney, targetMoney, formulaContext) {
+  if (targetMoney <= startingMoney) return 0;
+
+  if (metrics.method === "formulas" && formulaContext.enabled) {
+    try {
+      const growServer = Object.assign({}, metrics.formulaServer);
+      growServer.moneyAvailable = Math.max(MIN_MONEY, startingMoney);
+      growServer.moneyMax = targetMoney;
+      growServer.hackDifficulty = metrics.minSecurity;
+      growServer.minDifficulty = metrics.minSecurity;
+      return Math.ceil(ns.formulas.hacking.growThreads(growServer, formulaContext.player, targetMoney, 1));
+    } catch (_error) {}
+  }
+
+  const multiplier = targetMoney / Math.max(MIN_MONEY, startingMoney);
+  return Math.ceil(ns.growthAnalyze(metrics.server || "", Math.max(1, multiplier), 1));
+}
+
+function choosePrimaryEvaluation(evaluations, forcedTarget) {
+  if (forcedTarget) {
+    const forced = evaluations.find((evaluation) => evaluation.server === forcedTarget);
+    if (forced) return forced;
+  }
+
+  return evaluations[0] || null;
+}
+
+function chooseSecondaryPrepEvaluation(ns, evaluations, primary, options) {
+  for (const evaluation of evaluations) {
+    if (primary && evaluation.server === primary.server) continue;
+    if (isPrepped(ns, evaluation.server, options)) continue;
+    return evaluation;
+  }
+
+  return null;
+}
+
+async function scheduleHackBatches(ns, fleet, evaluation, budgetRam, options) {
+  const target = evaluation.server;
+  const plan = evaluation.batchPlan;
+  const requestedBatches = Math.min(plan.concurrentBatches, Math.floor(budgetRam / plan.batchRam));
+  const budget = { remaining: budgetRam };
+  const launched = {
+    label: "primary",
+    mode: "batch",
+    target,
+    requestedBatches,
+    launchedBatches: 0,
+    launchedProcesses: 0,
+    launchedThreads: 0,
+    ramUsedGb: 0,
+  };
+
+  for (let batchIndex = 0; batchIndex < requestedBatches; batchIndex += 1) {
+    const batchId = `${Date.now()}-${batchIndex}-${target}`;
+    const finishBase = plan.cycleMs - options.batchGapMs * 3 + batchIndex * plan.spacingMs;
+    const tasks = [
+      {
+        worker: HACK_WORKER,
+        threads: plan.hackThreads,
+        additionalMsec: finishBase - evaluation.hackTimeMs,
+      },
+      {
+        worker: WEAKEN_WORKER,
+        threads: plan.hackWeakenThreads,
+        additionalMsec: finishBase + options.batchGapMs - evaluation.weakenTimeMs,
+      },
+      {
+        worker: GROW_WORKER,
+        threads: plan.growThreads,
+        additionalMsec: finishBase + options.batchGapMs * 2 - evaluation.growTimeMs,
+      },
+      {
+        worker: WEAKEN_WORKER,
+        threads: plan.growWeakenThreads,
+        additionalMsec: finishBase + options.batchGapMs * 3 - evaluation.weakenTimeMs,
+      },
+    ];
+
+    let completedBatch = true;
+    for (const task of tasks) {
+      const result = await deployTask(ns, fleet, task.worker, target, task.threads, batchId, task.additionalMsec, budget);
+      launched.launchedProcesses += result.processes;
+      launched.launchedThreads += result.threads;
+      launched.ramUsedGb += result.ramUsed;
+      if (result.threads < task.threads) {
+        completedBatch = false;
+        break;
+      }
+    }
+
+    if (!completedBatch) break;
+    launched.launchedBatches += 1;
+  }
+
+  launched.ramUsedGb = roundRam(launched.ramUsedGb);
+  return launched;
+}
+
+async function schedulePrep(ns, fleet, target, budgetRam, options, formulaContext, label) {
+  const budget = { remaining: Math.max(0, budgetRam) };
+  const plan = buildPrepPlan(ns, target, budget.remaining, options, formulaContext);
+  const launched = {
+    label,
+    mode: "prep",
+    target,
+    requestedTasks: plan.tasks.length,
+    launchedProcesses: 0,
+    launchedThreads: 0,
+    ramUsedGb: 0,
+    status: plan.status,
+  };
+
+  for (const task of plan.tasks) {
+    const batchId = `${Date.now()}-${label}-${task.kind}-${target}`;
+    const result = await deployTask(ns, fleet, task.worker, target, task.threads, batchId, task.additionalMsec, budget);
+    launched.launchedProcesses += result.processes;
+    launched.launchedThreads += result.threads;
+    launched.ramUsedGb += result.ramUsed;
+  }
+
+  launched.ramUsedGb = roundRam(launched.ramUsedGb);
+  return launched;
+}
+
+function buildPrepPlan(ns, target, budgetRam, options, formulaContext) {
+  if (budgetRam <= 0) return { status: "no-ram", tasks: [] };
+
+  const workerRam = getWorkerRam(ns);
+  const metrics = getTargetMetrics(ns, target, formulaContext);
+  if (!metrics) return { status: "not-hackable", tasks: [] };
+  if (workerRam.min <= 0) return { status: "missing-workers", tasks: [] };
+
+  const maxMoney = ns.getServerMaxMoney(target);
+  const currentMoney = Math.max(0, ns.getServerMoneyAvailable(target));
+  const minSecurity = ns.getServerMinSecurityLevel(target);
+  const currentSecurity = ns.getServerSecurityLevel(target);
+  const weakenPerThread = getWeakenPerThread(ns, formulaContext);
+  if (weakenPerThread <= 0) return { status: "weaken-analysis-failed", tasks: [] };
+
+  const securityToWeaken = Math.max(0, currentSecurity - minSecurity - options.prepSecurityBuffer);
+  const desiredFirstWeakenThreads = Math.ceil(securityToWeaken / weakenPerThread);
+  const needsGrow = maxMoney > 0 && currentMoney < maxMoney * options.prepMoneyRatio;
+  const analyzedGrowThreads = needsGrow
+    ? getGrowThreadsForMoney(ns, metrics, Math.max(MIN_MONEY, currentMoney), maxMoney, formulaContext)
+    : 0;
+  if (!Number.isFinite(analyzedGrowThreads)) return { status: "grow-analysis-failed", tasks: [] };
+
+  const desiredGrowThreads = needsGrow
+    ? Math.max(1, analyzedGrowThreads)
+    : 0;
+  const desiredSecondWeakenThreads = Math.ceil((desiredGrowThreads * GROW_SECURITY_PER_THREAD) / weakenPerThread);
+  const fullRam = desiredFirstWeakenThreads * workerRam.weaken
+    + desiredGrowThreads * workerRam.grow
+    + desiredSecondWeakenThreads * workerRam.weaken;
+
+  if (desiredFirstWeakenThreads === 0 && desiredGrowThreads === 0) {
+    return { status: "already-prepped", tasks: [] };
+  }
+
+  if (fullRam <= budgetRam) {
+    return {
+      status: "full-cycle",
+      tasks: buildPrepTasks(desiredFirstWeakenThreads, desiredGrowThreads, desiredSecondWeakenThreads, metrics, options),
+    };
+  }
+
+  if (desiredFirstWeakenThreads > 0) {
+    const weakenThreads = Math.min(desiredFirstWeakenThreads, Math.floor(budgetRam / workerRam.weaken));
+    if (weakenThreads < 1) return { status: "insufficient-ram", tasks: [] };
+
+    return {
+      status: "partial-weaken",
+      tasks: buildPrepTasks(weakenThreads, 0, 0, metrics, options),
+    };
+  }
+
+  const growThreads = findGrowThreadsForBudget(desiredGrowThreads, budgetRam, workerRam, weakenPerThread);
+  if (growThreads > 0) {
+    const secondWeakenThreads = Math.ceil((growThreads * GROW_SECURITY_PER_THREAD) / weakenPerThread);
+    return {
+      status: growThreads === desiredGrowThreads ? "grow-cycle" : "partial-grow-cycle",
+      tasks: buildPrepTasks(0, growThreads, secondWeakenThreads, metrics, options),
+    };
+  }
+
+  const fallbackGrowThreads = Math.min(desiredGrowThreads, Math.floor(budgetRam / workerRam.grow));
+  return {
+    status: fallbackGrowThreads > 0 ? "grow-only" : "insufficient-ram",
+    tasks: fallbackGrowThreads > 0 ? buildPrepTasks(0, fallbackGrowThreads, 0, metrics, options) : [],
+  };
+}
+
+function buildPrepTasks(firstWeakenThreads, growThreads, secondWeakenThreads, metrics, options) {
+  const tasks = [];
+  const hasGrow = growThreads > 0;
+  const hasFirstWeaken = firstWeakenThreads > 0;
+  const baseFinish = hasFirstWeaken ? metrics.weakenTime : Math.max(metrics.weakenTime, metrics.growTime);
+
+  if (hasFirstWeaken) {
+    tasks.push({
+      kind: "weaken-1",
+      worker: WEAKEN_WORKER,
+      threads: firstWeakenThreads,
+      additionalMsec: 0,
+    });
+  }
+
+  if (hasGrow) {
+    tasks.push({
+      kind: "grow",
+      worker: GROW_WORKER,
+      threads: growThreads,
+      additionalMsec: baseFinish + (hasFirstWeaken ? options.batchGapMs : 0) - metrics.growTime,
+    });
+  }
+
+  if (secondWeakenThreads > 0) {
+    tasks.push({
+      kind: "weaken-2",
+      worker: WEAKEN_WORKER,
+      threads: secondWeakenThreads,
+      additionalMsec: baseFinish + (hasFirstWeaken ? options.batchGapMs * 2 : options.batchGapMs) - metrics.weakenTime,
+    });
+  }
+
+  return tasks;
+}
+
+function findGrowThreadsForBudget(desiredGrowThreads, budgetRam, workerRam, weakenPerThread) {
+  let low = 0;
+  let high = desiredGrowThreads;
+
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const weakenThreads = Math.ceil((mid * GROW_SECURITY_PER_THREAD) / weakenPerThread);
+    const ram = mid * workerRam.grow + weakenThreads * workerRam.weaken;
+    if (ram <= budgetRam) low = mid;
+    else high = mid - 1;
+  }
+
+  return low;
+}
+
+async function deployTask(ns, fleet, worker, target, requestedThreads, batchId, additionalMsec, budget) {
+  const workerRam = ns.getScriptRam(worker, "home");
+  const result = {
+    processes: 0,
+    ramUsed: 0,
+    threads: 0,
+  };
+
+  if (workerRam <= 0 || requestedThreads < 1 || budget.remaining < workerRam) return result;
+
+  let remainingThreads = requestedThreads;
+  for (const host of fleet) {
+    if (remainingThreads <= 0 || budget.remaining < workerRam) break;
+
+    const spendableRam = Math.min(host.freeRam, budget.remaining);
+    const threads = Math.min(remainingThreads, Math.floor(spendableRam / workerRam));
+    if (threads < 1) continue;
+
+    if (host.host !== "home") {
+      const copied = await ns.scp(WORKERS, host.host, "home");
+      if (!copied) continue;
+    }
+
+    const pid = ns.exec(worker, host.host, threads, target, batchId, Math.max(0, Math.round(additionalMsec)));
+    if (pid === 0) continue;
+
+    const usedRam = threads * workerRam;
+    host.freeRam = Math.max(0, host.freeRam - usedRam);
+    budget.remaining = Math.max(0, budget.remaining - usedRam);
+    remainingThreads -= threads;
+    result.processes += 1;
+    result.ramUsed += usedRam;
+    result.threads += threads;
+  }
+
+  return result;
+}
+
+function getWorkerRam(ns) {
+  const hack = ns.getScriptRam(HACK_WORKER, "home");
+  const grow = ns.getScriptRam(GROW_WORKER, "home");
+  const weaken = ns.getScriptRam(WEAKEN_WORKER, "home");
+
+  return {
+    grow,
+    hack,
+    weaken,
+    min: Math.min(hack, grow, weaken),
+  };
+}
+
+function getWeakenPerThread(ns, formulaContext) {
+  if (formulaContext.enabled) {
+    try {
+      return ns.formulas.hacking.weakenEffect(1, 1);
+    } catch (_error) {}
+  }
+
+  return ns.weakenAnalyze(1, 1);
+}
+
+function isPrepped(ns, server, options) {
+  try {
+    const maxMoney = ns.getServerMaxMoney(server);
+    const money = ns.getServerMoneyAvailable(server);
+    const minSecurity = ns.getServerMinSecurityLevel(server);
+    const security = ns.getServerSecurityLevel(server);
+
+    return maxMoney > 0
+      && money >= maxMoney * options.prepMoneyRatio
+      && security <= minSecurity + options.prepSecurityBuffer;
+  } catch (_error) {
+    return false;
+  }
 }
 
 function resolveHomeReserve(ns, reserveHome) {
@@ -217,6 +762,94 @@ function resolveHomeReserve(ns, reserveHome) {
   if (homeRam <= 32) return 4;
   if (homeRam <= 128) return 16;
   return 32;
+}
+
+function buildStatus(rooted, servers, freeRam, prepReserveRam, formulaContext, primary, secondary, primaryLaunch, secondaryLaunch) {
+  const target = primary ? primary.server : "none";
+  const secondaryTarget = secondary ? secondary.server : "none";
+  const mps = primary ? formatMoney(primary.expectedMoneyPerSecond) : "$0";
+
+  return [
+    `primary=${target}`,
+    `mps=${mps}/s`,
+    `mode=${primaryLaunch.mode}`,
+    `batches=${primaryLaunch.launchedBatches || 0}/${primaryLaunch.requestedBatches || 0}`,
+    `secondary=${secondaryTarget}`,
+    `prepThreads=${secondaryLaunch.launchedThreads || 0}`,
+    `ram=${roundRam(freeRam)}GB`,
+    `prepReserve=${roundRam(prepReserveRam)}GB`,
+    `rooted=${rooted.length}/${servers.length}`,
+    `formulas=${formulaContext.enabled ? "yes" : "no"}`,
+  ].join(" ");
+}
+
+function emptyLaunch(label) {
+  return {
+    label,
+    mode: "idle",
+    target: "",
+    launchedProcesses: 0,
+    launchedThreads: 0,
+    ramUsedGb: 0,
+  };
+}
+
+function summarizeEvaluation(evaluation) {
+  if (!evaluation) return null;
+
+  return {
+    server: evaluation.server,
+    expectedMoneyPerSecond: Math.round(evaluation.expectedMoneyPerSecond),
+    prepped: evaluation.prepped,
+    hackChance: roundRatio(evaluation.hackChance),
+    hackPercent: roundRatio(evaluation.batchPlan.hackedFraction),
+    hackThreads: evaluation.batchPlan.hackThreads,
+    growThreads: evaluation.batchPlan.growThreads,
+    hackWeakenThreads: evaluation.batchPlan.hackWeakenThreads,
+    growWeakenThreads: evaluation.batchPlan.growWeakenThreads,
+    concurrentBatches: evaluation.batchPlan.concurrentBatches,
+    batchRamGb: roundRam(evaluation.batchPlan.batchRam),
+    maxMoney: Math.round(evaluation.maxMoney),
+    minSecurity: roundRatio(evaluation.minSecurity),
+    requiredHackingLevel: evaluation.requiredHackingLevel,
+  };
+}
+
+function summarizeOptions(options) {
+  return {
+    batchGapMs: options.batchGapMs,
+    loopDelayMs: options.loopDelayMs,
+    moneyBuffer: options.moneyBuffer,
+    prepMoneyRatio: options.prepMoneyRatio,
+    prepRamMax: options.prepRamMax,
+    prepRamMin: options.prepRamMin,
+    prepRamPct: options.prepRamPct,
+    prepSecurityBuffer: options.prepSecurityBuffer,
+    reserveHome: options.reserveHome,
+    target: options.target,
+  };
+}
+
+function formatMoney(value) {
+  if (!Number.isFinite(value)) return "$0";
+  const abs = Math.abs(value);
+  if (abs >= 1e12) return `$${(value / 1e12).toFixed(2)}t`;
+  if (abs >= 1e9) return `$${(value / 1e9).toFixed(2)}b`;
+  if (abs >= 1e6) return `$${(value / 1e6).toFixed(2)}m`;
+  if (abs >= 1e3) return `$${(value / 1e3).toFixed(2)}k`;
+  return `$${value.toFixed(0)}`;
+}
+
+function roundRam(value) {
+  return Math.round(value * 100) / 100;
+}
+
+function roundRatio(value) {
+  return Math.round(value * 10000) / 10000;
+}
+
+function clamp(value, minValue, maxValue) {
+  return Math.min(maxValue, Math.max(minValue, value));
 }
 
 function printManualHints(ns, rootedCount, knownCount) {
