@@ -95,6 +95,8 @@ function buildRow(ns, server, totalRam, options, workerRam, formulaContext) {
       && security <= minSecurity + options.prepSecurityBuffer,
     hackChance: metrics ? metrics.hackChance : 0,
     hackPercent: batchPlan ? batchPlan.hackedFraction : 0,
+    hackThreads: batchPlan ? batchPlan.hackThreads : 0,
+    totalBatchThreads: batchPlan ? batchPlan.totalThreads : 0,
     expectedMoneyPerSecond: batchPlan ? batchPlan.expectedMoneyPerSecond : 0,
   };
 }
@@ -183,7 +185,12 @@ function chooseBestBatchPlan(ns, metrics, availableRam, options, workerRam, form
     const expectedMoneyPerSecond = metrics.maxMoney * hackedFraction * metrics.hackChance * batchesPerSecond;
 
     if (!bestPlan || expectedMoneyPerSecond > bestPlan.expectedMoneyPerSecond) {
-      bestPlan = { expectedMoneyPerSecond, hackedFraction, hackThreads };
+      bestPlan = {
+        expectedMoneyPerSecond,
+        hackedFraction,
+        hackThreads,
+        totalThreads: hackThreads + hackWeakenThreads + growThreads + growWeakenThreads,
+      };
     }
   };
 
@@ -253,6 +260,8 @@ function printReport(ns, rows, totalRam, options, formulaContext, workerRam) {
     padLeft("SEC NOW/MIN", 14),
     padLeft("PREP", 5),
     padLeft("HACK%", 7),
+    padLeft("HACK T", 6),
+    padLeft("BATCH T", 7),
     padLeft("CHANCE", 7),
     padLeft("EXPECTED $/SEC", 16),
   ].join(" ");
@@ -273,6 +282,8 @@ function printReport(ns, rows, totalRam, options, formulaContext, workerRam) {
       padLeft(`${formatSecurity(row.security)}/${formatSecurity(row.minSecurity)}`, 14),
       padLeft(row.maxMoney > 0 ? (row.prepped ? "yes" : "no") : "-", 5),
       padLeft(row.expectedMoneyPerSecond > 0 ? formatPercent(row.hackPercent) : "-", 7),
+      padLeft(row.expectedMoneyPerSecond > 0 ? row.hackThreads : "-", 6),
+      padLeft(row.expectedMoneyPerSecond > 0 ? row.totalBatchThreads : "-", 7),
       padLeft(row.expectedMoneyPerSecond > 0 ? formatPercent(row.hackChance) : "-", 7),
       padLeft(row.expectedMoneyPerSecond > 0 ? formatMoney(row.expectedMoneyPerSecond) : "-", 16),
     ].join(" "));
