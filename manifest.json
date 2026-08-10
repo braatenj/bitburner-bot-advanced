@@ -17,6 +17,10 @@
       "source": "bb/daemon/cloud-hosts.js"
     },
     {
+      "path": "/bb/tools/server-report.js",
+      "source": "bb/tools/server-report.js"
+    },
+    {
       "path": "/bb/workers/hack.js",
       "source": "bb/workers/hack.js"
     },
