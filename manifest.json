@@ -1,6 +1,6 @@
 {
   "name": "bitburner-bot-advanced",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "entry": "/bb/daemon/supervisor.js",
   "baseUrl": "./",
   "files": [
@@ -8,14 +8,25 @@
       "path": "/bb/daemon/supervisor.js",
       "source": "bb/daemon/supervisor.js"
     },
-    {
-      "path": "/bb/daemon/early-hack.js",
-      "source": "bb/daemon/early-hack.js"
-    },
-    {
-      "path": "/bb/daemon/cloud-hosts.js",
-      "source": "bb/daemon/cloud-hosts.js"
-    },
+    { "path": "/bb/daemon/bn1.js", "source": "bb/daemon/bn1.js" },
+    { "path": "/bb/daemon/bn2.js", "source": "bb/daemon/bn2.js" },
+    { "path": "/bb/daemon/bn3.js", "source": "bb/daemon/bn3.js" },
+    { "path": "/bb/daemon/bn4.js", "source": "bb/daemon/bn4.js" },
+    { "path": "/bb/daemon/bn5.js", "source": "bb/daemon/bn5.js" },
+    { "path": "/bb/daemon/bn6.js", "source": "bb/daemon/bn6.js" },
+    { "path": "/bb/daemon/bn7.js", "source": "bb/daemon/bn7.js" },
+    { "path": "/bb/daemon/bn8.js", "source": "bb/daemon/bn8.js" },
+    { "path": "/bb/daemon/bn9.js", "source": "bb/daemon/bn9.js" },
+    { "path": "/bb/daemon/bn10.js", "source": "bb/daemon/bn10.js" },
+    { "path": "/bb/daemon/bn11.js", "source": "bb/daemon/bn11.js" },
+    { "path": "/bb/daemon/bn12.js", "source": "bb/daemon/bn12.js" },
+    { "path": "/bb/daemon/bn13.js", "source": "bb/daemon/bn13.js" },
+    { "path": "/bb/daemon/bn14.js", "source": "bb/daemon/bn14.js" },
+    { "path": "/bb/daemon/bn15.js", "source": "bb/daemon/bn15.js" },
+    { "path": "/bb/modules/bitnode-profiles.js", "source": "bb/modules/bitnode-profiles.js" },
+    { "path": "/bb/modules/bitnode-runtime.js", "source": "bb/modules/bitnode-runtime.js" },
+    { "path": "/bb/modules/hacking-manager.js", "source": "bb/modules/hacking-manager.js" },
+    { "path": "/bb/modules/server-manager.js", "source": "bb/modules/server-manager.js" },
     {
       "path": "/bb/tools/server-report.js",
       "source": "bb/tools/server-report.js"

@@ -1,165 +1,43 @@
 const CONTEXT_FILE = "/bb/data/context.json";
-const CLOUD_HOSTS_DAEMON = "/bb/daemon/cloud-hosts.js";
-const EARLY_HACK_DAEMON = "/bb/daemon/early-hack.js";
+const BITNODE_DAEMON_PREFIX = "/bb/daemon/bn";
 
+/**
+ * Detects the current BitNode, writes shared runtime context, and hands off to
+ * that BitNode's dedicated daemon. The selected daemon owns module startup and
+ * receives every launch option unchanged.
+ */
 export async function main(ns) {
   ns.disableLog("ALL");
 
-  const options = parseArgs(ns.args);
+  const contextPath = readContextPath(ns.args);
   const context = buildContext(ns);
-  ns.write(options.context, JSON.stringify(context, null, 2), "w");
+  ns.write(contextPath, JSON.stringify(context, null, 2), "w");
 
-  if (!options.quiet) {
-    ns.tprint(`[bb] BitNode ${context.bitNode}; source files: ${formatSourceFiles(context.sourceFiles) || "none active"}`);
-  }
-
-  const services = buildServices(options);
-  if (!options.watch) {
-    spawnServices(ns, services);
+  const daemon = `${BITNODE_DAEMON_PREFIX}${context.bitNode}.js`;
+  if (!ns.fileExists(daemon, "home")) {
+    ns.tprint(`[bb] No daemon is installed for BitNode ${context.bitNode}: ${daemon}`);
     return;
   }
 
-  while (true) {
-    for (const service of services) {
-      if (ns.scriptRunning(service.script, "home")) continue;
-      const pid = ns.exec(service.script, "home", 1, ...service.args);
-      if (pid === 0) {
-        ns.print(`[bb] Failed to start ${service.script}; waiting for RAM.`);
-      } else {
-        ns.tprint(`[bb] Started ${service.script} with pid ${pid}.`);
-      }
-    }
+  ns.tprint(`[bb] BitNode ${context.bitNode}; source files: ${formatSourceFiles(context.sourceFiles) || "none active"}. Starting ${daemon}.`);
+  ns.spawn(daemon, { threads: 1, spawnDelay: 0 }, ...ns.args);
+}
 
-    const updatedContext = buildContext(ns);
-    ns.write(options.context, JSON.stringify(updatedContext, null, 2), "w");
-    await ns.sleep(options.pollMs);
+function readContextPath(rawArgs) {
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    if (String(rawArgs[index]) === "--context") return String(rawArgs[index + 1] || CONTEXT_FILE);
   }
-}
-
-function parseArgs(rawArgs) {
-  const options = {
-    batchGap: "",
-    cloudMinSize: "",
-    cloudMoneyBuffer: "",
-    cloudPoll: "",
-    context: CONTEXT_FILE,
-    loopDelay: "",
-    moneyBuffer: "",
-    noCloudHosts: false,
-    noEarlyHack: false,
-    pollMs: 60000,
-    prepMoneyRatio: "",
-    prepRamMax: "",
-    prepRamMin: "",
-    prepRamPct: "",
-    prepSecurityBuffer: "",
-    quiet: false,
-    reserveHome: "auto",
-    target: "",
-    watch: false,
-  };
-
-  for (let i = 0; i < rawArgs.length; i += 1) {
-    const arg = String(rawArgs[i]);
-    if (arg === "--batch-gap") options.batchGap = readArg(rawArgs, ++i, "");
-    else if (arg === "--cloud-min-size") options.cloudMinSize = readArg(rawArgs, ++i, "");
-    else if (arg === "--cloud-money-buffer") options.cloudMoneyBuffer = readArg(rawArgs, ++i, "");
-    else if (arg === "--cloud-poll") options.cloudPoll = readArg(rawArgs, ++i, "");
-    else if (arg === "--context") options.context = readArg(rawArgs, ++i, CONTEXT_FILE);
-    else if (arg === "--loop-delay") options.loopDelay = readArg(rawArgs, ++i, "");
-    else if (arg === "--money-buffer") options.moneyBuffer = readArg(rawArgs, ++i, "");
-    else if (arg === "--no-early-hack") options.noEarlyHack = true;
-    else if (arg === "--no-cloud-hosts") options.noCloudHosts = true;
-    else if (arg === "--poll") options.pollMs = parsePollMs(rawArgs[++i], options.pollMs);
-    else if (arg === "--prep-money-ratio") options.prepMoneyRatio = readArg(rawArgs, ++i, "");
-    else if (arg === "--prep-ram-max") options.prepRamMax = readArg(rawArgs, ++i, "");
-    else if (arg === "--prep-ram-min") options.prepRamMin = readArg(rawArgs, ++i, "");
-    else if (arg === "--prep-ram-pct") options.prepRamPct = readArg(rawArgs, ++i, "");
-    else if (arg === "--prep-security-buffer") options.prepSecurityBuffer = readArg(rawArgs, ++i, "");
-    else if (arg === "--quiet") options.quiet = true;
-    else if (arg === "--reserve-home") options.reserveHome = readArg(rawArgs, ++i, "auto");
-    else if (arg === "--target") options.target = readArg(rawArgs, ++i, "");
-    else if (arg === "--watch") options.watch = true;
-  }
-
-  return options;
-}
-
-function buildServices(options) {
-  const services = [];
-  if (!options.noEarlyHack) services.push({ script: EARLY_HACK_DAEMON, args: buildEarlyHackArgs(options) });
-  if (!options.noCloudHosts) services.push({ script: CLOUD_HOSTS_DAEMON, args: buildCloudHostsArgs(options) });
-  return services;
-}
-
-function spawnServices(ns, services) {
-  const pending = services.filter((service) => !ns.scriptRunning(service.script, "home"));
-  if (pending.length === 0) {
-    ns.tprint("[bb] All enabled daemons are already running.");
-    return;
-  }
-
-  const finalService = pending.pop();
-  for (const service of pending) {
-    const pid = ns.exec(service.script, "home", 1, ...service.args);
-    if (pid === 0) ns.tprint(`[bb] Could not start ${service.script}; insufficient home RAM.`);
-    else ns.tprint(`[bb] Started ${service.script} with pid ${pid}.`);
-  }
-
-  ns.tprint(`[bb] Spawning ${finalService.script}.`);
-  ns.spawn(finalService.script, { threads: 1, spawnDelay: 0 }, ...finalService.args);
-}
-
-function buildEarlyHackArgs(options) {
-  const args = ["--context", options.context, "--reserve-home", String(options.reserveHome)];
-  appendOption(args, "--batch-gap", options.batchGap);
-  appendOption(args, "--loop-delay", options.loopDelay);
-  appendOption(args, "--money-buffer", options.moneyBuffer);
-  appendOption(args, "--prep-money-ratio", options.prepMoneyRatio);
-  appendOption(args, "--prep-ram-max", options.prepRamMax);
-  appendOption(args, "--prep-ram-min", options.prepRamMin);
-  appendOption(args, "--prep-ram-pct", options.prepRamPct);
-  appendOption(args, "--prep-security-buffer", options.prepSecurityBuffer);
-  if (options.target) args.push("--target", options.target);
-  if (options.quiet) args.push("--quiet");
-  return args;
-}
-
-function buildCloudHostsArgs(options) {
-  const args = [];
-  appendOption(args, "--cloud-min-size", options.cloudMinSize);
-  appendOption(args, "--cloud-money-buffer", options.cloudMoneyBuffer);
-  appendOption(args, "--cloud-poll", options.cloudPoll);
-  if (options.quiet) args.push("--quiet");
-  return args;
-}
-
-function appendOption(args, name, value) {
-  if (value !== "") args.push(name, String(value));
-}
-
-function readArg(rawArgs, index, fallback) {
-  if (index >= rawArgs.length || rawArgs[index] === undefined) return fallback;
-  return String(rawArgs[index]);
-}
-
-function parsePollMs(value, fallback) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(1000, parsed);
+  return CONTEXT_FILE;
 }
 
 function buildContext(ns) {
   const resetInfo = readResetInfo(ns);
   const sourceFiles = normalizeOwnedSourceFiles(resetInfo.ownedSF);
   const sourceFileLevels = {};
-
-  for (const sourceFile of sourceFiles) {
-    sourceFileLevels[String(sourceFile.n)] = sourceFile.lvl;
-  }
+  for (const sourceFile of sourceFiles) sourceFileLevels[String(sourceFile.n)] = sourceFile.lvl;
 
   return {
-    version: 1,
+    version: 2,
     createdAt: Date.now(),
     bitNode: resetInfo.currentNode || 1,
     sourceFiles,
@@ -179,16 +57,12 @@ function readResetInfo(ns) {
     return ns.getResetInfo();
   } catch (error) {
     ns.tprint(`[bb] Could not read reset info, assuming BitNode 1 with no Source-Files: ${String(error)}`);
-    return {
-      currentNode: 1,
-      ownedSF: new Map(),
-    };
+    return { currentNode: 1, ownedSF: new Map() };
   }
 }
 
 function normalizeOwnedSourceFiles(ownedSF) {
   const entries = [];
-
   if (ownedSF instanceof Map) {
     for (const entry of ownedSF.entries()) entries.push(entry);
   } else if (Array.isArray(ownedSF)) {

@@ -1,6 +1,8 @@
 # bitburner-bot-advanced
 
-Plain JavaScript Bitburner automation scripts. The first milestone is a bootstrapper, a manifest-driven daemon launcher, BitNode/source-file detection, and early-game hacking automation that can start from an 8GB home server.
+Plain JavaScript Bitburner automation scripts. The bootstrapper detects the active BitNode, launches its dedicated daemon, and starts the reusable modules that node needs. The current reusable modules provide early-game hacking and purchased-server management from an 8GB home server.
+
+For the spoiler-inclusive, automation-aware Source-File progression route, see the [Interleaved BitNode Completion Playbook](BITNODE_PLAYBOOK.md).
 
 ## Install in Bitburner
 
@@ -37,10 +39,15 @@ run /bb/tools/ns-command.js singularity.getCurrentWork
 
 - Detects the current BitNode and active Source-File levels via `ns.getResetInfo()`.
 - Writes runtime context to `/bb/data/context.json`.
-- Starts `/bb/daemon/early-hack.js`.
+- Hands off to `/bb/daemon/bn1.js` through `/bb/daemon/bn15.js`; each daemon applies its node-specific module profile.
+- Starts `/bb/modules/hacking-manager.js` and/or `/bb/modules/server-manager.js` when its profile permits them. BN8 starts neither because normal hacking and purchased-server income do not apply; BN9 omits purchased servers.
 - Scans the network, opens ports using available programs, nukes eligible servers, copies worker scripts, and runs weaken/grow/hack workers across rooted RAM.
 - Writes `/bb/data/early-hack-state.json` each cycle.
 
+## Module Naming Convention
+
+Reusable BitNode services belong in `/bb/modules/` and must be named `[TASK]-manager.js` (for example, `/bb/modules/hacking-manager.js` or `/bb/modules/server-manager.js`). Keep manually run information utilities in `/bb/tools/` and low-level hack/grow/weaken workers in `/bb/workers/`.
+
 ## Next Iteration
 
-Iteration 2 should add BitNode 2 handling as a dedicated daemon. The intended extension point is `/bb/daemon/supervisor.js`: add a BN2 daemon to the manifest, detect `context.bitNode === 2` or `context.capabilities.gang`, then launch the gang-specific daemon alongside the baseline hacking daemon.
+Add specialized modules (Gang, Corporation, Singularity, Bladeburner, Stock, Hacknet, Sleeves, Stanek, IPvGO, and Darknet) and enable them in the matching profile in `/bb/modules/bitnode-profiles.js`. Keep manual reporting/information utilities in `/bb/tools/` and low-level hack/grow/weaken scripts in `/bb/workers/`.

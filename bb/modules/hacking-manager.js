@@ -1,5 +1,5 @@
 /**
- * Early-game hacking daemon.
+ * Reusable early-game hacking module.
  *
  * On each pass it discovers the network, attempts to root every reachable
  * server, and turns unused RAM into either income batches or preparation work.
