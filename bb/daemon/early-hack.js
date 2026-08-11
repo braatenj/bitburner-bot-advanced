@@ -1,3 +1,25 @@
+/**
+ * Early-game hacking daemon.
+ *
+ * On each pass it discovers the network, attempts to root every reachable
+ * server, and turns unused RAM into either income batches or preparation work.
+ * The best available target is used for HWGW batches once it is prepped; until
+ * then, RAM is used to weaken and grow it. A separate, unprepped target may be
+ * prepared concurrently with the RAM reserved for that purpose.
+ *
+ * Optional arguments:
+ * --target HOST              Prefer HOST when it is an eligible target.
+ * --reserve-home GB|auto     RAM withheld on home (default: auto).
+ * --batch-gap MS             Completion gap between HWGW operations.
+ * --loop-delay MS            Time between scheduling passes.
+ * --money-buffer RATIO       Maximum money fraction left after a hack.
+ * --prep-money-ratio RATIO   Money threshold for a prepped server.
+ * --prep-security-buffer N   Security allowed above the minimum when prepped.
+ * --prep-ram-pct RATIO       Fleet RAM reserved for secondary preparation.
+ * --prep-ram-min/max GB      Bounds for that preparation reserve.
+ * --context PATH             Accepted for supervisor compatibility; unused.
+ * --quiet                    Suppress status and manual-unlock hints.
+ */
 const HACK_WORKER = "/bb/workers/hack.js";
 const GROW_WORKER = "/bb/workers/grow.js";
 const WEAKEN_WORKER = "/bb/workers/weaken.js";
@@ -9,6 +31,7 @@ const HACK_SECURITY_PER_THREAD = 0.002;
 const GROW_SECURITY_PER_THREAD = 0.004;
 const MIN_MONEY = 1;
 
+/** Runs the daemon's discovery, scheduling, reporting, and persistence loop. */
 export async function main(ns) {
   ns.disableLog("ALL");
 
@@ -79,6 +102,7 @@ export async function main(ns) {
   }
 }
 
+/** Parses daemon flags and normalizes bounded numeric values. */
 function parseArgs(rawArgs) {
   const options = {
     batchGapMs: 1000,
@@ -120,18 +144,21 @@ function parseArgs(rawArgs) {
   return options;
 }
 
+/** Converts a value to a whole number of milliseconds, or returns the fallback. */
 function parseMs(value, fallback, minValue) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(minValue, Math.round(parsed));
 }
 
+/** Converts a value to a finite number constrained to the supplied range. */
 function parseNumber(value, fallback, minValue, maxValue) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return clamp(parsed, minValue, maxValue);
 }
 
+/** Parses a decimal or percentage string and constrains it to a ratio range. */
 function parseRatio(value, fallback, minValue, maxValue) {
   const raw = String(value || "").trim();
   if (!raw) return fallback;
@@ -142,6 +169,7 @@ function parseRatio(value, fallback, minValue, maxValue) {
   return clamp(parsed, minValue, maxValue);
 }
 
+/** Breadth-first scans the network from home and returns each discovered host once. */
 function scanAllServers(ns) {
   const seen = new Set(["home"]);
   const queue = ["home"];
@@ -159,6 +187,7 @@ function scanAllServers(ns) {
   return queue;
 }
 
+/** Opens every available port on a server, nukes it when possible, and reports root access. */
 function tryRoot(ns, server) {
   if (server === "home" || ns.hasRootAccess(server)) return true;
 
@@ -203,6 +232,7 @@ function tryRoot(ns, server) {
   return ns.hasRootAccess(server);
 }
 
+/** Builds a RAM-sorted list of eligible execution hosts, excluding draining machines. */
 function buildFleet(ns, rootedServers, homeReserve, drainingHosts) {
   const fleet = [];
 
@@ -231,6 +261,7 @@ function buildFleet(ns, rootedServers, homeReserve, drainingHosts) {
   return fleet;
 }
 
+/** Reads cloud-host state and returns hosts that should receive no new work. */
 function getDrainingHosts(ns) {
   try {
     const state = JSON.parse(ns.read(CLOUD_HOSTS_STATE_FILE));
@@ -240,10 +271,12 @@ function getDrainingHosts(ns) {
   }
 }
 
+/** Returns the currently schedulable free RAM across the fleet. */
 function sumFleetRam(fleet) {
   return fleet.reduce((total, host) => total + host.freeRam, 0);
 }
 
+/** Calculates the bounded portion of fleet RAM reserved for secondary preparation. */
 function resolvePrepRamReserve(totalFreeRam, options) {
   if (totalFreeRam <= 0) return 0;
 
@@ -251,6 +284,7 @@ function resolvePrepRamReserve(totalFreeRam, options) {
   return Math.min(totalFreeRam, boundedReserve);
 }
 
+/** Detects Formulas.exe support and captures the player data needed by formula calls. */
 function getFormulaContext(ns) {
   try {
     if (!ns.fileExists("Formulas.exe", "home")) return { enabled: false, player: null };
@@ -261,6 +295,7 @@ function getFormulaContext(ns) {
   }
 }
 
+/** Scores every eligible rooted server by its best expected batch income per second. */
 function evaluateTargets(ns, rootedServers, availableRam, options, formulaContext) {
   const workerRam = getWorkerRam(ns);
   const hackingLevel = ns.getHackingLevel();
@@ -298,6 +333,7 @@ function evaluateTargets(ns, rootedServers, availableRam, options, formulaContex
   return evaluations;
 }
 
+/** Returns whether a server is rooted, valuable, and within the current hacking level. */
 function canHackForMoney(ns, server, hackingLevel) {
   try {
     return ns.hasRootAccess(server)
@@ -308,6 +344,11 @@ function canHackForMoney(ns, server, hackingLevel) {
   }
 }
 
+/**
+ * Gets ideal (max-money, minimum-security) target metrics.
+ * Uses Formulas.exe when present, then safely falls back to standard Netscript
+ * analysis APIs.
+ */
 function getTargetMetrics(ns, server, formulaContext) {
   const maxMoney = ns.getServerMaxMoney(server);
   const minSecurity = Math.max(1, ns.getServerMinSecurityLevel(server));
@@ -351,6 +392,7 @@ function getTargetMetrics(ns, server, formulaContext) {
   };
 }
 
+/** Searches practical hack thread counts and returns the highest-throughput HWGW plan. */
 function chooseBestBatchPlan(ns, metrics, availableRam, options, workerRam, formulaContext) {
   const maxHackFraction = 1 - options.moneyBuffer;
   const hackPercent = metrics.hackPercent;
@@ -427,6 +469,7 @@ function chooseBestBatchPlan(ns, metrics, availableRam, options, workerRam, form
   return bestPlan;
 }
 
+/** Creates a compact, representative set of hack-thread counts for plan optimization. */
 function buildHackThreadCandidates(maxHackThreads, hackPercent, maxHackFraction) {
   const candidates = new Set([1, maxHackThreads]);
   const exactLimit = Math.min(maxHackThreads, 128);
@@ -442,6 +485,7 @@ function buildHackThreadCandidates(maxHackThreads, hackPercent, maxHackFraction)
     .sort((a, b) => a - b);
 }
 
+/** Calculates grow threads required to restore a server from startingMoney to targetMoney. */
 function getGrowThreadsForMoney(ns, metrics, startingMoney, targetMoney, formulaContext) {
   if (targetMoney <= startingMoney) return 0;
 
@@ -460,6 +504,7 @@ function getGrowThreadsForMoney(ns, metrics, startingMoney, targetMoney, formula
   return Math.ceil(ns.growthAnalyze(metrics.server || "", Math.max(1, multiplier), 1));
 }
 
+/** Selects a valid forced target when possible; otherwise returns the highest-scoring target. */
 function choosePrimaryEvaluation(evaluations, forcedTarget) {
   if (forcedTarget) {
     const forced = evaluations.find((evaluation) => evaluation.server === forcedTarget);
@@ -469,6 +514,7 @@ function choosePrimaryEvaluation(evaluations, forcedTarget) {
   return evaluations[0] || null;
 }
 
+/** Returns the best unprepped target other than the primary for background preparation. */
 function chooseSecondaryPrepEvaluation(ns, evaluations, primary, options) {
   for (const evaluation of evaluations) {
     if (primary && evaluation.server === primary.server) continue;
@@ -479,6 +525,7 @@ function chooseSecondaryPrepEvaluation(ns, evaluations, primary, options) {
   return null;
 }
 
+/** Schedules complete, time-spaced HWGW batches for the primary prepped target. */
 async function scheduleHackBatches(ns, fleet, evaluation, budgetRam, options) {
   const target = evaluation.server;
   const plan = evaluation.batchPlan;
@@ -541,6 +588,7 @@ async function scheduleHackBatches(ns, fleet, evaluation, budgetRam, options) {
   return launched;
 }
 
+/** Schedules a full or partial weaken/grow preparation cycle within a RAM budget. */
 async function schedulePrep(ns, fleet, rootedServers, target, budgetRam, options, formulaContext, label) {
   const budget = { remaining: Math.max(0, budgetRam) };
   const plan = buildPrepPlan(ns, target, budget.remaining, options, formulaContext);
@@ -573,6 +621,7 @@ async function schedulePrep(ns, fleet, rootedServers, target, budgetRam, options
   return launched;
 }
 
+/** Detects an in-flight full preparation cycle so the daemon does not duplicate it. */
 function hasActiveFullPrepBatch(ns, rootedServers, target) {
   for (const host of rootedServers) {
     for (const process of ns.ps(host)) {
@@ -584,6 +633,11 @@ function hasActiveFullPrepBatch(ns, rootedServers, target) {
   return false;
 }
 
+/**
+ * Produces the most useful preparation tasks that fit the budget.
+ * Priority is security reduction, followed by a grow plus its compensating
+ * weaken; if neither paired operation fits, it falls back to grow alone.
+ */
 function buildPrepPlan(ns, target, budgetRam, options, formulaContext) {
   if (budgetRam <= 0) return { status: "no-ram", tasks: [] };
 
@@ -652,6 +706,7 @@ function buildPrepPlan(ns, target, budgetRam, options, formulaContext) {
   };
 }
 
+/** Builds ordered prep tasks whose delays make weaken, grow, then weaken finish in sequence. */
 function buildPrepTasks(firstWeakenThreads, growThreads, secondWeakenThreads, metrics, options) {
   const tasks = [];
   const hasGrow = growThreads > 0;
@@ -688,6 +743,7 @@ function buildPrepTasks(firstWeakenThreads, growThreads, secondWeakenThreads, me
   return tasks;
 }
 
+/** Uses binary search to find the largest grow-and-compensating-weaken pair within budget. */
 function findGrowThreadsForBudget(desiredGrowThreads, budgetRam, workerRam, weakenPerThread) {
   let low = 0;
   let high = desiredGrowThreads;
@@ -703,6 +759,10 @@ function findGrowThreadsForBudget(desiredGrowThreads, budgetRam, workerRam, weak
   return low;
 }
 
+/**
+ * Distributes one worker task across the free fleet RAM, copying worker scripts
+ * as needed. Mutates both fleet free RAM and the shared scheduling budget.
+ */
 async function deployTask(ns, fleet, worker, target, requestedThreads, batchId, additionalMsec, budget) {
   const workerRam = ns.getScriptRam(worker, "home");
   const result = {
@@ -741,6 +801,7 @@ async function deployTask(ns, fleet, worker, target, requestedThreads, batchId, 
   return result;
 }
 
+/** Reads RAM costs for the three worker scripts and exposes their minimum as a readiness check. */
 function getWorkerRam(ns) {
   const hack = ns.getScriptRam(HACK_WORKER, "home");
   const grow = ns.getScriptRam(GROW_WORKER, "home");
@@ -754,6 +815,7 @@ function getWorkerRam(ns) {
   };
 }
 
+/** Returns security reduction for one weaken thread, preferring formula precision. */
 function getWeakenPerThread(ns, formulaContext) {
   if (formulaContext.enabled) {
     try {
@@ -764,6 +826,7 @@ function getWeakenPerThread(ns, formulaContext) {
   return ns.weakenAnalyze(1, 1);
 }
 
+/** Returns whether a target meets the configured money and security preparation thresholds. */
 function isPrepped(ns, server, options) {
   try {
     const maxMoney = ns.getServerMaxMoney(server);
@@ -779,6 +842,7 @@ function isPrepped(ns, server, options) {
   }
 }
 
+/** Resolves explicit home RAM reserve or chooses a conservative reserve by home size. */
 function resolveHomeReserve(ns, reserveHome) {
   if (reserveHome !== "auto") {
     const value = Number(reserveHome);
@@ -792,6 +856,7 @@ function resolveHomeReserve(ns, reserveHome) {
   return 32;
 }
 
+/** Formats the concise status line printed when the daemon state changes. */
 function buildStatus(rooted, servers, freeRam, prepReserveRam, formulaContext, primary, secondary, primaryLaunch, secondaryLaunch) {
   const target = primary ? primary.server : "none";
   const secondaryTarget = secondary ? secondary.server : "none";
@@ -811,6 +876,7 @@ function buildStatus(rooted, servers, freeRam, prepReserveRam, formulaContext, p
   ].join(" ");
 }
 
+/** Creates a no-work launch summary with the same shape as scheduler results. */
 function emptyLaunch(label) {
   return {
     label,
@@ -822,6 +888,7 @@ function emptyLaunch(label) {
   };
 }
 
+/** Reduces a target evaluation to stable, human-readable state-file fields. */
 function summarizeEvaluation(evaluation) {
   if (!evaluation) return null;
 
@@ -843,6 +910,7 @@ function summarizeEvaluation(evaluation) {
   };
 }
 
+/** Selects the effective scheduling options persisted in the state file. */
 function summarizeOptions(options) {
   return {
     batchGapMs: options.batchGapMs,
@@ -858,6 +926,7 @@ function summarizeOptions(options) {
   };
 }
 
+/** Formats a numeric currency value using compact game-friendly units. */
 function formatMoney(value) {
   if (!Number.isFinite(value)) return "$0";
   const abs = Math.abs(value);
@@ -868,18 +937,22 @@ function formatMoney(value) {
   return `$${value.toFixed(0)}`;
 }
 
+/** Rounds RAM values to two decimal places for output. */
 function roundRam(value) {
   return Math.round(value * 100) / 100;
 }
 
+/** Rounds ratios and security values to four decimal places for output. */
 function roundRatio(value) {
   return Math.round(value * 10000) / 10000;
 }
 
+/** Restricts a numeric value to an inclusive range. */
 function clamp(value, minValue, maxValue) {
   return Math.min(maxValue, Math.max(minValue, value));
 }
 
+/** Prints actionable reminders about missing port crackers and unreached hosts. */
 function printManualHints(ns, rootedCount, knownCount) {
   const missingPrograms = [];
   if (!ns.fileExists("BruteSSH.exe", "home")) missingPrograms.push("BruteSSH.exe");
@@ -897,6 +970,7 @@ function printManualHints(ns, rootedCount, knownCount) {
   }
 }
 
+/** Replaces the daemon's JSON state snapshot for other scripts and dashboards. */
 function writeState(ns, state) {
   ns.write(STATE_FILE, JSON.stringify(state, null, 2), "w");
 }

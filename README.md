@@ -19,11 +19,15 @@ run /bootstrap.js --reserve-home 4
 run /bootstrap.js --cloud-min-size 32 --cloud-money-buffer 1000000000
 run /bb/daemon/supervisor.js --watch
 run /bb/tools/server-report.js
+run /bb/tools/ns-command.js getServerMoneyAvailable n00dles
+run /bb/tools/ns-command.js singularity.getCurrentWork
 ```
 
 `--cloud-min-size` sets the smallest purchased-server tier in GB. `--cloud-money-buffer` reserves that amount of cash before the cloud-host daemon purchases or upgrades servers. Purchases never drop below the largest tier it has already purchased.
 
 `/bb/tools/server-report.js` is a manual report. It lists every discovered server and scores each rooted, hackable money target by expected money per second using the total installed rooted RAM as the batch capacity. Its target scores assume a fully prepped server.
+
+`/bb/tools/ns-command.js` invokes a Netscript API function and prints its result to the terminal. It supports top-level commands, an optional `ns.` prefix, and dotted API paths, so `ns.getHackingLevel` and `singularity.getCurrentWork` both work. Supply arguments after the command; use a `json:` prefix for object or array arguments, for example `json:{"threads":4}`. The tool reserves the called API's RAM cost, so home needs enough free RAM for the selected command.
 
 - `--target <server>` forces the early hacking daemon to use a specific money server when it is rootable and hackable.
 - `--reserve-home <gb>` keeps home RAM free. The default `auto` reserve uses `0GB` on an 8GB home server.

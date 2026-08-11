@@ -21,6 +21,10 @@
       "source": "bb/tools/server-report.js"
     },
     {
+      "path": "/bb/tools/ns-command.js",
+      "source": "bb/tools/ns-command.js"
+    },
+    {
       "path": "/bb/workers/hack.js",
       "source": "bb/workers/hack.js"
     },
