@@ -25,6 +25,7 @@
     { "path": "/bb/daemon/bn15.js", "source": "bb/daemon/bn15.js" },
     { "path": "/bb/modules/bitnode-profiles.js", "source": "bb/modules/bitnode-profiles.js" },
     { "path": "/bb/modules/bitnode-runtime.js", "source": "bb/modules/bitnode-runtime.js" },
+    { "path": "/bb/modules/faction-manager.js", "source": "bb/modules/faction-manager.js" },
     { "path": "/bb/modules/hacking-manager.js", "source": "bb/modules/hacking-manager.js" },
     { "path": "/bb/modules/server-manager.js", "source": "bb/modules/server-manager.js" },
     {

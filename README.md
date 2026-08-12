@@ -1,6 +1,6 @@
 # bitburner-bot-advanced
 
-Plain JavaScript Bitburner automation scripts. The bootstrapper detects the active BitNode, launches its dedicated daemon, and starts the reusable modules that node needs. The current reusable modules provide early-game hacking and purchased-server management from an 8GB home server.
+Plain JavaScript Bitburner automation scripts. The bootstrapper detects the active BitNode, launches its dedicated daemon, and starts the reusable modules that node needs. The current reusable modules provide early-game hacking, purchased-server management, and (when Singularity is available) faction/augmentation management.
 
 For the spoiler-inclusive, automation-aware Source-File progression route, see the [Interleaved BitNode Completion Playbook](BITNODE_PLAYBOOK.md).
 
@@ -20,6 +20,8 @@ run /bootstrap.js --target n00dles
 run /bootstrap.js --reserve-home 4
 run /bootstrap.js --cloud-min-size 32 --cloud-money-buffer 1000000000
 run /bb/daemon/supervisor.js --watch
+run /bb/daemon/supervisor.js --no-factions
+run /bb/modules/faction-manager.js --factions CyberSec,NiteSec --min-augmentations 5
 run /bb/tools/server-report.js
 run /bb/tools/ns-command.js getServerMoneyAvailable n00dles
 run /bb/tools/ns-command.js singularity.getCurrentWork
@@ -34,13 +36,14 @@ run /bb/tools/ns-command.js singularity.getCurrentWork
 - `--target <server>` forces the early hacking daemon to use a specific money server when it is rootable and hackable.
 - `--reserve-home <gb>` keeps home RAM free. The default `auto` reserve uses `0GB` on an 8GB home server.
 - `--watch` keeps the supervisor alive to restart the hacking and cloud-host daemons if either exits. The default supervisor mode starts both daemons and exits so early-game RAM stays available.
+- `--no-factions` prevents the Singularity faction manager from launching. When enabled, it joins only the BitNode profile's invited factions, works **Hacking Contracts** for missing augmentation reputation, buys relevant non-NeuroFlux augmentations from most expensive to least expensive, and installs/restarts through `/bootstrap.js` after three queued augmentations. With `Formulas.exe` and enough current faction favor, it stops faction work and donates exactly enough money to reach the highest remaining augmentation reputation requirement. Use `--min-augmentations`, `--augmentation-money-buffer`, or `--no-install` to adjust that reset policy.
 
 ## Current Scope
 
 - Detects the current BitNode and active Source-File levels via `ns.getResetInfo()`.
 - Writes runtime context to `/bb/data/context.json`.
 - Hands off to `/bb/daemon/bn1.js` through `/bb/daemon/bn15.js`; each daemon applies its node-specific module profile.
-- Starts `/bb/modules/hacking-manager.js` and/or `/bb/modules/server-manager.js` when its profile permits them. BN8 starts neither because normal hacking and purchased-server income do not apply; BN9 omits purchased servers.
+- Starts `/bb/modules/hacking-manager.js` and/or `/bb/modules/server-manager.js` when its profile permits them. When the runtime context confirms Singularity access, it also starts `/bb/modules/faction-manager.js` with the active BitNode's faction route. BN8 starts neither because normal hacking and purchased-server income do not apply; BN9 omits purchased servers.
 - Scans the network, opens ports using available programs, nukes eligible servers, copies worker scripts, and runs weaken/grow/hack workers across rooted RAM.
 - Writes `/bb/data/early-hack-state.json` each cycle.
 

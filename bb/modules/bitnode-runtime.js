@@ -1,5 +1,6 @@
 const HACKING_MODULE = "/bb/modules/hacking-manager.js";
 const CLOUD_HOSTS_MODULE = "/bb/modules/server-manager.js";
+const FACTION_MODULE = "/bb/modules/faction-manager.js";
 
 /**
  * Starts the reusable services selected by one BitNode daemon.
@@ -29,11 +30,13 @@ export async function runBitNodeDaemon(ns, profile) {
 }
 
 function parseRuntimeOptions(rawArgs) {
-  const options = { noCloudHosts: false, noEarlyHack: false, pollMs: 60000, quiet: false, watch: false };
+  const options = { context: "/bb/data/context.json", noCloudHosts: false, noEarlyHack: false, noFactions: false, pollMs: 60000, quiet: false, watch: false };
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = String(rawArgs[index]);
-    if (arg === "--no-cloud-hosts") options.noCloudHosts = true;
+    if (arg === "--context") options.context = String(rawArgs[++index] || options.context);
+    else if (arg === "--no-cloud-hosts") options.noCloudHosts = true;
     else if (arg === "--no-early-hack") options.noEarlyHack = true;
+    else if (arg === "--no-factions") options.noFactions = true;
     else if (arg === "--poll") options.pollMs = parsePollMs(rawArgs[++index], options.pollMs);
     else if (arg === "--quiet") options.quiet = true;
     else if (arg === "--watch") options.watch = true;
@@ -62,7 +65,22 @@ function buildServices(profile, rawArgs, options) {
       script: CLOUD_HOSTS_MODULE,
     });
   }
+  if (profile.factions && !options.noFactions && contextHasSingularity(ns, options.context)) {
+    services.push({
+      args: [...profile.factions, ...rawArgs],
+      label: "factions",
+      script: FACTION_MODULE,
+    });
+  }
   return services;
+}
+
+function contextHasSingularity(ns, contextPath) {
+  try {
+    return Boolean(JSON.parse(ns.read(contextPath)).capabilities?.singularity);
+  } catch (_error) {
+    return false;
+  }
 }
 
 function startServices(ns, services) {
