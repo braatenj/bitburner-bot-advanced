@@ -11,7 +11,7 @@ export async function runBitNodeDaemon(ns, profile) {
   ns.disableLog("ALL");
 
   const options = parseRuntimeOptions(ns.args);
-  const services = buildServices(profile, ns.args, options);
+  const services = buildServices(ns, profile, ns.args, options);
   if (services.length === 0) {
     ns.tprint(`[bb:bn${profile.bitNode}] No modules enabled.`);
     return;
@@ -49,7 +49,7 @@ function parsePollMs(value, fallback) {
   return Number.isFinite(parsed) ? Math.max(1000, Math.round(parsed)) : fallback;
 }
 
-function buildServices(profile, rawArgs, options) {
+function buildServices(ns, profile, rawArgs, options) {
   const services = [];
   if (profile.hacking && !options.noEarlyHack) {
     services.push({
