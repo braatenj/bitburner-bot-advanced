@@ -44,7 +44,7 @@ export async function main(ns) {
     if (bought) {
       report(ns, options, `Bought ${bought.augmentation} from ${bought.faction}.`);
     } else if (donation) {
-      report(ns, options, `Donated $${ns.formatNumber(donation.amount)} to ${donation.faction} for ${ns.formatNumber(donation.rep)} reputation.`);
+      report(ns, options, `Donated $${ns.format.number(donation.amount)} to ${donation.faction} for ${ns.format.number(donation.rep)} reputation.`);
     } else if (!options.noInstall && queued.length >= options.minAugmentations && affordable.length === 0) {
       ns.tprint(`[bb:factions] Installing ${queued.length} queued augmentation(s); restarting ${RESTART_SCRIPT}.`);
       ns.singularity.installAugmentations(RESTART_SCRIPT);
@@ -54,7 +54,7 @@ export async function main(ns) {
       const working = startHackingContracts(ns, target, options);
       if (!working && !options.quiet) {
         const status = target
-          ? `Waiting for $${ns.formatNumber(target.price)} or ${ns.formatNumber(Math.max(0, target.repRequired - target.rep))} rep for ${target.augmentation}.`
+          ? `Waiting for $${ns.format.number(target.price)} or ${ns.format.number(Math.max(0, target.repRequired - target.rep))} rep for ${target.augmentation}.`
           : "Waiting for invitations or augmentations from the configured factions.";
         ns.print(`[bb:factions] ${status}`);
       }
