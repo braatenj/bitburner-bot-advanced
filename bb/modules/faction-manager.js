@@ -15,12 +15,19 @@
  * --min-augmentations N       Install after this many queued augs (default 3).
  * --augmentation-money-buffer MONEY  Cash never spent on augmentations.
  * --poll MS                   Evaluation interval (default 60000).
+ * --no-backdoors              Disable faction-server backdoor automation.
  * --no-install                Join, work, and purchase without resetting.
  * --quiet                     Suppress terminal status messages.
  */
 const STATE_FILE = "/bb/data/faction-manager-state.json";
 const RESTART_SCRIPT = "/bootstrap.js";
 const NEUROFLUX_GOVERNOR = "NeuroFlux Governor";
+const FACTION_BACKDOOR_SERVERS = {
+  BitRunners: "run4theh111z",
+  CyberSec: "CSEC",
+  NiteSec: "avmnite-02h",
+  "The Black Hand": "I.I.I.I",
+};
 
 export async function main(ns) {
   ns.disableLog("ALL");
@@ -33,6 +40,7 @@ export async function main(ns) {
 
   while (true) {
     const player = ns.getPlayer();
+    const backdoor = await installFactionBackdoor(ns, options, player.factions);
     const joined = joinInvitations(ns, options, player.factions);
     const members = player.factions.filter((faction) => options.factions.includes(faction));
     const queued = queuedAugmentations(ns);
@@ -60,7 +68,7 @@ export async function main(ns) {
       }
     }
 
-    writeState(ns, { affordable, candidates, joined, members, options, queued });
+    writeState(ns, { affordable, backdoor, candidates, joined, members, options, queued });
     await ns.sleep(options.pollMs);
   }
 }
@@ -71,6 +79,7 @@ function parseArgs(rawArgs) {
     focus: ["hacking"],
     minAugmentations: 3,
     moneyBuffer: 0,
+    noBackdoors: false,
     noInstall: false,
     pollMs: 60000,
     quiet: false,
@@ -82,11 +91,92 @@ function parseArgs(rawArgs) {
     else if (arg === "--augmentation-focus") options.focus = splitList(rawArgs[++index]).map((value) => value.toLowerCase());
     else if (arg === "--min-augmentations") options.minAugmentations = parseInteger(rawArgs[++index], options.minAugmentations, 1);
     else if (arg === "--augmentation-money-buffer") options.moneyBuffer = parseNumber(rawArgs[++index], options.moneyBuffer, 0);
+    else if (arg === "--no-backdoors") options.noBackdoors = true;
     else if (arg === "--no-install") options.noInstall = true;
     else if (arg === "--poll") options.pollMs = parseInteger(rawArgs[++index], options.pollMs, 1000);
     else if (arg === "--quiet") options.quiet = true;
   }
   return options;
+}
+
+/** Installs one needed faction-server backdoor per pass without touching inaccessible targets. */
+async function installFactionBackdoor(ns, options, memberships) {
+  const state = { attempted: false, installed: false, server: "" };
+  if (options.noBackdoors) return state;
+
+  const target = findBackdoorTarget(ns, options.factions, memberships);
+  if (!target) return state;
+
+  state.server = target;
+  const route = findRoute(ns, target);
+  if (!route || ns.getHackingLevel() < ns.getServerRequiredHackingLevel(target) || !tryRoot(ns, target)) return state;
+
+  try {
+    ns.singularity.stopAction();
+    state.attempted = true;
+    for (const host of route.slice(1)) {
+      if (!ns.singularity.connect(host)) return state;
+    }
+    await ns.singularity.installBackdoor();
+    state.installed = Boolean(ns.getServer(target).backdoorInstalled);
+    if (state.installed) report(ns, options, `Installed faction backdoor on ${target}.`);
+  } catch (_error) {
+    // The target may require more hacking level or may already be in progress.
+  } finally {
+    try {
+      for (const host of [...route].reverse().slice(1)) ns.singularity.connect(host);
+    } catch (_error) {}
+  }
+  return state;
+}
+
+function findBackdoorTarget(ns, factions, memberships) {
+  for (const faction of factions) {
+    if (memberships.includes(faction) || hasJoinedEnemy(ns, faction, memberships)) continue;
+    const server = FACTION_BACKDOOR_SERVERS[faction];
+    if (server && ns.serverExists(server) && !ns.getServer(server).backdoorInstalled) return server;
+  }
+  return "";
+}
+
+/** Finds a connection path from home to a discovered server. */
+function findRoute(ns, target) {
+  const parents = new Map([["home", null]]);
+  const queue = ["home"];
+  for (let index = 0; index < queue.length; index += 1) {
+    const host = queue[index];
+    if (host === target) break;
+    for (const neighbor of ns.scan(host)) {
+      if (!parents.has(neighbor)) {
+        parents.set(neighbor, host);
+        queue.push(neighbor);
+      }
+    }
+  }
+  if (!parents.has(target)) return null;
+
+  const route = [];
+  for (let host = target; host !== null; host = parents.get(host)) route.unshift(host);
+  return route;
+}
+
+/** Opens every available port and gains root when the player meets the requirement. */
+function tryRoot(ns, server) {
+  if (ns.hasRootAccess(server)) return true;
+
+  let openedPorts = 0;
+  if (ns.fileExists("BruteSSH.exe", "home")) { try { ns.brutessh(server); openedPorts += 1; } catch (_error) {} }
+  if (ns.fileExists("FTPCrack.exe", "home")) { try { ns.ftpcrack(server); openedPorts += 1; } catch (_error) {} }
+  if (ns.fileExists("relaySMTP.exe", "home")) { try { ns.relaysmtp(server); openedPorts += 1; } catch (_error) {} }
+  if (ns.fileExists("HTTPWorm.exe", "home")) { try { ns.httpworm(server); openedPorts += 1; } catch (_error) {} }
+  if (ns.fileExists("SQLInject.exe", "home")) { try { ns.sqlinject(server); openedPorts += 1; } catch (_error) {} }
+
+  if (openedPorts >= ns.getServerNumPortsRequired(server)) {
+    try {
+      ns.nuke(server);
+    } catch (_error) {}
+  }
+  return ns.hasRootAccess(server);
 }
 
 function splitList(value) {
@@ -225,10 +315,11 @@ function report(ns, options, message) {
   if (!options.quiet) ns.tprint(`[bb:factions] ${message}`);
 }
 
-function writeState(ns, { affordable, candidates, joined, members, options, queued }) {
+function writeState(ns, { affordable, backdoor, candidates, joined, members, options, queued }) {
   const next = candidates[0];
   ns.write(STATE_FILE, JSON.stringify({
     affordable: affordable.length,
+    backdoor,
     configuredFactions: options.factions,
     joinedThisPass: joined,
     members,
