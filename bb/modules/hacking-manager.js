@@ -193,7 +193,7 @@ function manageDarkweb(ns, options) {
 
   state.enabled = true;
   try {
-    if (!ns.hasTor()) {
+    if (!ns.hasTorRouter()) {
       if (canSpend(ns, 200000, options.darkwebMoneyBuffer) && ns.singularity.purchaseTor()) {
         state.tor = true;
         reportDarkwebPurchases(ns, options, ["TOR router"]);
