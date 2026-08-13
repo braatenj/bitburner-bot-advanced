@@ -10,14 +10,16 @@
  * Optional arguments:
  * --target HOST              Prefer HOST when it is an eligible target.
  * --reserve-home GB|auto     RAM withheld on home (default: auto).
- * --batch-gap MS             Completion gap between HWGW operations.
+ * --batch-gap MS             Completion gap between HWGW operations (default: 250).
  * --loop-delay MS            Time between scheduling passes.
  * --money-buffer RATIO       Maximum money fraction left after a hack.
- * --prep-money-ratio RATIO   Money threshold for a prepped server.
- * --prep-security-buffer N   Security allowed above the minimum when prepped.
+ * --prep-money-ratio RATIO   Money threshold for a prepped server (default: 1).
+ * --prep-security-buffer N   Security allowed above the minimum when prepped (default: 0).
  * --prep-ram-pct RATIO       Fleet RAM reserved for secondary preparation.
  * --prep-ram-min/max GB      Bounds for that preparation reserve.
- * --context PATH             Accepted for supervisor compatibility; unused.
+ * --darkweb-money-buffer N   Cash retained before TOR/program purchases.
+ * --no-darkweb               Disable Singularity TOR and dark-web purchases.
+ * --context PATH             Runtime context used to detect Singularity access.
  * --quiet                    Suppress status and manual-unlock hints.
  */
 const HACK_WORKER = "/bb/workers/hack.js";
@@ -30,6 +32,9 @@ const STATE_FILE = "/bb/data/early-hack-state.json";
 const HACK_SECURITY_PER_THREAD = 0.002;
 const GROW_SECURITY_PER_THREAD = 0.004;
 const MIN_MONEY = 1;
+const MAX_BATCH_GAP_MS = 2000;
+const DEFAULT_DARKWEB_MONEY_BUFFER = 200000;
+const PORT_PROGRAMS = ["BruteSSH.exe", "FTPCrack.exe", "relaySMTP.exe", "HTTPWorm.exe", "SQLInject.exe"];
 
 /** Runs the daemon's discovery, scheduling, reporting, and persistence loop. */
 export async function main(ns) {
@@ -37,8 +42,10 @@ export async function main(ns) {
 
   const options = parseArgs(ns.args);
   let lastStatus = "";
+  let effectiveBatchGapMs = options.batchGapMs;
 
   while (true) {
+    const darkweb = manageDarkweb(ns, options);
     const servers = scanAllServers(ns);
     const rooted = [];
 
@@ -52,21 +59,24 @@ export async function main(ns) {
     const prepReserveRam = resolvePrepRamReserve(totalFreeRam, options);
     const incomeRamBudget = Math.max(0, totalFreeRam - prepReserveRam);
     const formulaContext = getFormulaContext(ns);
-    const evaluations = evaluateTargets(ns, rooted, incomeRamBudget, options, formulaContext);
+    const schedulingOptions = { ...options, batchGapMs: effectiveBatchGapMs };
+    const evaluations = evaluateTargets(ns, rooted, incomeRamBudget, schedulingOptions, formulaContext);
     const primary = choosePrimaryEvaluation(evaluations, options.target);
     const secondary = chooseSecondaryPrepEvaluation(ns, evaluations, primary, options);
 
     let primaryLaunch = emptyLaunch("primary");
-    if (primary && isPrepped(ns, primary.server, options)) {
-      primaryLaunch = await scheduleHackBatches(ns, fleet, primary, incomeRamBudget, options);
+    if (primary && isPrepped(ns, primary.server, schedulingOptions)) {
+      primaryLaunch = await scheduleHackBatches(ns, fleet, primary, incomeRamBudget, schedulingOptions);
     } else if (primary) {
-      primaryLaunch = await schedulePrep(ns, fleet, rooted, primary.server, incomeRamBudget, options, formulaContext, "primary");
+      primaryLaunch = await schedulePrep(ns, fleet, rooted, primary.server, incomeRamBudget, schedulingOptions, formulaContext, "primary");
     }
 
     let secondaryLaunch = emptyLaunch("secondary");
     if (secondary) {
-      secondaryLaunch = await schedulePrep(ns, fleet, rooted, secondary.server, sumFleetRam(fleet), options, formulaContext, "secondary");
+      secondaryLaunch = await schedulePrep(ns, fleet, rooted, secondary.server, sumFleetRam(fleet), schedulingOptions, formulaContext, "secondary");
     }
+
+    effectiveBatchGapMs = adjustBatchGap(ns, options, effectiveBatchGapMs, primaryLaunch);
 
     const status = buildStatus(rooted, servers, totalFreeRam, prepReserveRam, formulaContext, primary, secondary, primaryLaunch, secondaryLaunch);
     if (!options.quiet && status !== lastStatus) {
@@ -78,6 +88,7 @@ export async function main(ns) {
     writeState(ns, {
       updatedAt: Date.now(),
       formulas: formulaContext.enabled,
+      darkweb,
       knownServers: servers.length,
       rootedServers: rooted.length,
       ram: {
@@ -95,7 +106,7 @@ export async function main(ns) {
         secondary: secondaryLaunch,
       },
       topTargets: evaluations.slice(0, 10).map(summarizeEvaluation),
-      options: summarizeOptions(options),
+      options: summarizeOptions({ ...options, batchGapMs: effectiveBatchGapMs }),
     });
 
     await ns.sleep(options.loopDelayMs);
@@ -105,15 +116,19 @@ export async function main(ns) {
 /** Parses daemon flags and normalizes bounded numeric values. */
 function parseArgs(rawArgs) {
   const options = {
-    batchGapMs: 1000,
+    batchGapMs: 250,
     context: "/bb/data/context.json",
+    darkwebMoneyBuffer: DEFAULT_DARKWEB_MONEY_BUFFER,
     loopDelayMs: 5000,
     moneyBuffer: 0.1,
-    prepMoneyRatio: 0.99,
+    noDarkweb: false,
+    // Batch calculations assume max money and minimum security, so keep the
+    // default readiness thresholds equally strict.
+    prepMoneyRatio: 1,
     prepRamMax: 64,
     prepRamMin: 0,
     prepRamPct: 0.1,
-    prepSecurityBuffer: 0.05,
+    prepSecurityBuffer: 0,
     quiet: false,
     reserveHome: "auto",
     target: "",
@@ -123,8 +138,10 @@ function parseArgs(rawArgs) {
     const arg = String(rawArgs[i]);
     if (arg === "--batch-gap") options.batchGapMs = parseMs(rawArgs[++i], options.batchGapMs, 100);
     else if (arg === "--context") options.context = String(rawArgs[++i] || options.context);
+    else if (arg === "--darkweb-money-buffer") options.darkwebMoneyBuffer = parseNumber(rawArgs[++i], options.darkwebMoneyBuffer, 0, Number.MAX_SAFE_INTEGER);
     else if (arg === "--loop-delay") options.loopDelayMs = parseMs(rawArgs[++i], options.loopDelayMs, 1000);
     else if (arg === "--money-buffer") options.moneyBuffer = parseRatio(rawArgs[++i], options.moneyBuffer, 0, 0.95);
+    else if (arg === "--no-darkweb") options.noDarkweb = true;
     else if (arg === "--prep-money-ratio") options.prepMoneyRatio = parseRatio(rawArgs[++i], options.prepMoneyRatio, 0.01, 1);
     else if (arg === "--prep-ram-max") options.prepRamMax = parseNumber(rawArgs[++i], options.prepRamMax, 0, Number.MAX_SAFE_INTEGER);
     else if (arg === "--prep-ram-min") options.prepRamMin = parseNumber(rawArgs[++i], options.prepRamMin, 0, Number.MAX_SAFE_INTEGER);
@@ -167,6 +184,76 @@ function parseRatio(value, fallback, minValue, maxValue) {
   if (!Number.isFinite(parsed)) return fallback;
   if (raw.endsWith("%") || parsed > 1) parsed /= 100;
   return clamp(parsed, minValue, maxValue);
+}
+
+/** Buys TOR and dark-web programs when the current runtime has Singularity access. */
+function manageDarkweb(ns, options) {
+  const state = { enabled: false, purchased: [], tor: false };
+  if (options.noDarkweb || !hasSingularityAccess(ns, options.context)) return state;
+
+  state.enabled = true;
+  try {
+    if (!ns.hasTor()) {
+      if (canSpend(ns, 200000, options.darkwebMoneyBuffer) && ns.singularity.purchaseTor()) {
+        state.tor = true;
+        reportDarkwebPurchases(ns, options, ["TOR router"]);
+      }
+      return state;
+    }
+
+    const programs = ns.singularity.getDarkwebPrograms()
+      .filter((program) => !ns.fileExists(program, "home"))
+      .map((program) => ({
+        cost: ns.singularity.getDarkwebProgramCost(program),
+        program,
+      }))
+      .filter((entry) => Number.isFinite(entry.cost) && entry.cost >= 0)
+      .sort(compareDarkwebPrograms);
+
+    for (const entry of programs) {
+      if (!canSpend(ns, entry.cost, options.darkwebMoneyBuffer)) continue;
+      if (ns.singularity.purchaseProgram(entry.program)) state.purchased.push(entry.program);
+    }
+    reportDarkwebPurchases(ns, options, state.purchased);
+  } catch (_error) {
+    state.enabled = false;
+  }
+  return state;
+}
+
+function hasSingularityAccess(ns, contextPath) {
+  try {
+    if (JSON.parse(ns.read(contextPath)).capabilities?.singularity) return true;
+  } catch (_error) {
+    // The manager can also be started directly without a supervisor context.
+  }
+
+  try {
+    const resetInfo = ns.getResetInfo();
+    if (resetInfo.currentNode === 4) return true;
+    if (resetInfo.ownedSF instanceof Map) return (resetInfo.ownedSF.get(4) || 0) > 0;
+    return Array.isArray(resetInfo.ownedSF) && resetInfo.ownedSF.some((entry) => Number(entry.n ?? entry[0]) === 4 && Number(entry.lvl ?? entry[1]) > 0);
+  } catch (_error) {
+    return false;
+  }
+}
+
+function canSpend(ns, cost, moneyBuffer) {
+  return ns.getPlayer().money - cost >= moneyBuffer;
+}
+
+/** Prioritizes port crackers to expand rooting capacity, then buys cheaper tools first. */
+function compareDarkwebPrograms(left, right) {
+  const leftPortIndex = PORT_PROGRAMS.indexOf(left.program);
+  const rightPortIndex = PORT_PROGRAMS.indexOf(right.program);
+  const leftPriority = leftPortIndex === -1 ? PORT_PROGRAMS.length : leftPortIndex;
+  const rightPriority = rightPortIndex === -1 ? PORT_PROGRAMS.length : rightPortIndex;
+  if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+  return left.cost - right.cost;
+}
+
+function reportDarkwebPurchases(ns, options, purchased) {
+  if (!options.quiet && purchased.length > 0) ns.tprint(`[bb:hack] Dark-web purchase: ${purchased.join(", ")}.`);
 }
 
 /** Breadth-first scans the network from home and returns each discovered host once. */
@@ -529,6 +616,7 @@ function chooseSecondaryPrepEvaluation(ns, evaluations, primary, options) {
 async function scheduleHackBatches(ns, fleet, evaluation, budgetRam, options) {
   const target = evaluation.server;
   const plan = evaluation.batchPlan;
+  const scheduleStartedAt = Date.now();
   const requestedBatches = Math.min(plan.concurrentBatches, Math.floor(budgetRam / plan.batchRam));
   const budget = { remaining: budgetRam };
   const launched = {
@@ -540,6 +628,12 @@ async function scheduleHackBatches(ns, fleet, evaluation, budgetRam, options) {
     launchedProcesses: 0,
     launchedThreads: 0,
     ramUsedGb: 0,
+    timing: {
+      gapMs: options.batchGapMs,
+      lateProcesses: 0,
+      maxLateMs: 0,
+      minLeadMs: Number.POSITIVE_INFINITY,
+    },
   };
 
   for (let batchIndex = 0; batchIndex < requestedBatches; batchIndex += 1) {
@@ -549,28 +643,32 @@ async function scheduleHackBatches(ns, fleet, evaluation, budgetRam, options) {
       {
         worker: HACK_WORKER,
         threads: plan.hackThreads,
-        additionalMsec: finishBase - evaluation.hackTimeMs,
+        completionAt: scheduleStartedAt + finishBase,
+        durationMs: evaluation.hackTimeMs,
       },
       {
         worker: WEAKEN_WORKER,
         threads: plan.hackWeakenThreads,
-        additionalMsec: finishBase + options.batchGapMs - evaluation.weakenTimeMs,
+        completionAt: scheduleStartedAt + finishBase + options.batchGapMs,
+        durationMs: evaluation.weakenTimeMs,
       },
       {
         worker: GROW_WORKER,
         threads: plan.growThreads,
-        additionalMsec: finishBase + options.batchGapMs * 2 - evaluation.growTimeMs,
+        completionAt: scheduleStartedAt + finishBase + options.batchGapMs * 2,
+        durationMs: evaluation.growTimeMs,
       },
       {
         worker: WEAKEN_WORKER,
         threads: plan.growWeakenThreads,
-        additionalMsec: finishBase + options.batchGapMs * 3 - evaluation.weakenTimeMs,
+        completionAt: scheduleStartedAt + finishBase + options.batchGapMs * 3,
+        durationMs: evaluation.weakenTimeMs,
       },
     ];
 
     let completedBatch = true;
     for (const task of tasks) {
-      const result = await deployTask(ns, fleet, task.worker, target, task.threads, batchId, task.additionalMsec, budget);
+      const result = await deployTask(ns, fleet, task.worker, target, task.threads, batchId, 0, budget, task, launched.timing);
       launched.launchedProcesses += result.processes;
       launched.launchedThreads += result.threads;
       launched.ramUsedGb += result.ramUsed;
@@ -585,6 +683,7 @@ async function scheduleHackBatches(ns, fleet, evaluation, budgetRam, options) {
   }
 
   launched.ramUsedGb = roundRam(launched.ramUsedGb);
+  if (!Number.isFinite(launched.timing.minLeadMs)) launched.timing.minLeadMs = 0;
   return launched;
 }
 
@@ -763,7 +862,7 @@ function findGrowThreadsForBudget(desiredGrowThreads, budgetRam, workerRam, weak
  * Distributes one worker task across the free fleet RAM, copying worker scripts
  * as needed. Mutates both fleet free RAM and the shared scheduling budget.
  */
-async function deployTask(ns, fleet, worker, target, requestedThreads, batchId, additionalMsec, budget) {
+async function deployTask(ns, fleet, worker, target, requestedThreads, batchId, additionalMsec, budget, timingTask = null, timing = null) {
   const workerRam = ns.getScriptRam(worker, "home");
   const result = {
     processes: 0,
@@ -786,7 +885,14 @@ async function deployTask(ns, fleet, worker, target, requestedThreads, batchId, 
       if (!copied) continue;
     }
 
-    const pid = ns.exec(worker, host.host, threads, target, batchId, Math.max(0, Math.round(additionalMsec)));
+    const launchAt = Date.now();
+    const scheduledStartAt = timingTask ? timingTask.completionAt - timingTask.durationMs : launchAt;
+    const taskDelayMs = timingTask
+      ? Math.max(0, Math.round(timingTask.completionAt - launchAt - timingTask.durationMs))
+      : Math.max(0, Math.round(additionalMsec));
+    if (timing) recordLaunchTiming(timing, scheduledStartAt, launchAt);
+
+    const pid = ns.exec(worker, host.host, threads, target, batchId, taskDelayMs);
     if (pid === 0) continue;
 
     const usedRam = threads * workerRam;
@@ -799,6 +905,27 @@ async function deployTask(ns, fleet, worker, target, requestedThreads, batchId, 
   }
 
   return result;
+}
+
+/** Records whether a worker launch could still start before its planned time. */
+function recordLaunchTiming(timing, scheduledStartAt, launchAt) {
+  const leadMs = scheduledStartAt - launchAt;
+  timing.minLeadMs = Math.min(timing.minLeadMs, leadMs);
+  if (leadMs >= 0) return;
+
+  timing.lateProcesses += 1;
+  timing.maxLateMs = Math.max(timing.maxLateMs, Math.round(-leadMs));
+}
+
+/** Backs off completion spacing after a launch misses its planned start slot. */
+function adjustBatchGap(ns, options, currentGapMs, launch) {
+  if (!launch.timing || launch.timing.lateProcesses === 0) return currentGapMs;
+
+  const nextGapMs = Math.min(MAX_BATCH_GAP_MS, Math.max(currentGapMs + 25, Math.ceil(currentGapMs * 1.25 / 25) * 25));
+  if (nextGapMs > currentGapMs && !options.quiet) {
+    ns.tprint(`[bb:hack] Batch launch was late by up to ${launch.timing.maxLateMs}ms; increasing gap from ${currentGapMs}ms to ${nextGapMs}ms.`);
+  }
+  return nextGapMs;
 }
 
 /** Reads RAM costs for the three worker scripts and exposes their minimum as a readiness check. */
@@ -867,6 +994,8 @@ function buildStatus(rooted, servers, freeRam, prepReserveRam, formulaContext, p
     `mps=${mps}/s`,
     `mode=${primaryLaunch.mode}`,
     `batches=${primaryLaunch.launchedBatches || 0}/${primaryLaunch.requestedBatches || 0}`,
+    `gap=${primaryLaunch.timing?.gapMs || "-"}ms`,
+    `late=${primaryLaunch.timing?.lateProcesses || 0}`,
     `secondary=${secondaryTarget}`,
     `prepThreads=${secondaryLaunch.launchedThreads || 0}`,
     `ram=${roundRam(freeRam)}GB`,
@@ -902,6 +1031,7 @@ function summarizeEvaluation(evaluation) {
     growThreads: evaluation.batchPlan.growThreads,
     hackWeakenThreads: evaluation.batchPlan.hackWeakenThreads,
     growWeakenThreads: evaluation.batchPlan.growWeakenThreads,
+    batchGapMs: evaluation.batchPlan.spacingMs / 4,
     concurrentBatches: evaluation.batchPlan.concurrentBatches,
     batchRamGb: roundRam(evaluation.batchPlan.batchRam),
     maxMoney: Math.round(evaluation.maxMoney),
@@ -915,7 +1045,9 @@ function summarizeOptions(options) {
   return {
     batchGapMs: options.batchGapMs,
     loopDelayMs: options.loopDelayMs,
+    darkwebMoneyBuffer: options.darkwebMoneyBuffer,
     moneyBuffer: options.moneyBuffer,
+    noDarkweb: options.noDarkweb,
     prepMoneyRatio: options.prepMoneyRatio,
     prepRamMax: options.prepRamMax,
     prepRamMin: options.prepRamMin,

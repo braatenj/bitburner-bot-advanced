@@ -5,10 +5,10 @@ const COMBAT_FACTIONS = ["The Syndicate", "Speakers for the Dead", "The Dark Arm
 
 /** Per-BitNode defaults. User-supplied daemon arguments override these values. */
 export const BITNODE_PROFILES = {
-  1: profile(1, "Source Genesis", HACK_DEFAULTS, cloud(32, 1e9), factionArgs(HACKING_FACTIONS, "hacking")),
+  1: profile(1, "Source Genesis", HACK_DEFAULTS, cloud(32, 1e9), factionArgs([...HACKING_FACTIONS, "Sector-12"], "hacking")),
   2: profile(2, "Rise of the Underworld", [...HACK_DEFAULTS, "--prep-ram-pct", "0.15"], cloud(32, 1e9), factionArgs([...HACKING_FACTIONS, "Slum Snakes"], "hacking,strength,defense,dexterity,agility")),
   3: profile(3, "Corporatocracy", HACK_DEFAULTS, cloud(64, 5e9), factionArgs(CORPORATE_FACTIONS, "company,hacking")),
-  4: profile(4, "The Singularity", [...HACK_DEFAULTS, "--reserve-home", "8"], cloud(32, 1e9), factionArgs(HACKING_FACTIONS, "hacking")),
+  4: profile(4, "The Singularity", [...HACK_DEFAULTS, "--reserve-home", "8"], cloud(32, 1e9), factionArgs([...HACKING_FACTIONS, "Sector-12"], "hacking")),
   5: profile(5, "Artificial Intelligence", HACK_DEFAULTS, cloud(32, 1e9), factionArgs(HACKING_FACTIONS, "hacking")),
   6: profile(6, "Bladeburners", [...HACK_DEFAULTS, "--reserve-home", "8"], cloud(64, 5e9), factionArgs(COMBAT_FACTIONS, "strength,defense,dexterity,agility,hacking")),
   7: profile(7, "Bladeburners 2079", [...HACK_DEFAULTS, "--reserve-home", "8"], cloud(64, 5e9), factionArgs(COMBAT_FACTIONS, "strength,defense,dexterity,agility,hacking")),
