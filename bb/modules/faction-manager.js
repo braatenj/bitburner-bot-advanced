@@ -20,6 +20,7 @@
  * --quiet                     Suppress terminal status messages.
  */
 const STATE_FILE = "/bb/data/faction-manager-state.json";
+const CLOUD_HOSTS_STATE_FILE = "/bb/data/cloud-hosts-state.json";
 const RESTART_SCRIPT = "/bootstrap.js";
 const NEUROFLUX_GOVERNOR = "NeuroFlux Governor";
 const FACTION_BACKDOOR_SERVERS = {
@@ -54,6 +55,7 @@ export async function main(ns) {
     } else if (donation) {
       report(ns, options, `Donated $${ns.format.number(donation.amount)} to ${donation.faction} for ${ns.format.number(donation.rep)} reputation.`);
     } else if (!options.noInstall && queued.length >= options.minAugmentations && affordable.length === 0) {
+      ns.rm(CLOUD_HOSTS_STATE_FILE);
       ns.tprint(`[bb:factions] Installing ${queued.length} queued augmentation(s); restarting ${RESTART_SCRIPT}.`);
       ns.singularity.installAugmentations(RESTART_SCRIPT);
       return;
