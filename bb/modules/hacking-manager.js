@@ -666,6 +666,8 @@ async function scheduleHackBatches(ns, fleet, evaluation, budgetRam, options) {
       },
     ];
 
+    if (!canPlaceTasks(fleet, tasks, budget.remaining, ns)) break;
+
     let completedBatch = true;
     for (const task of tasks) {
       const result = await deployTask(ns, fleet, task.worker, target, task.threads, batchId, 0, budget, task, launched.timing);
@@ -859,8 +861,8 @@ function findGrowThreadsForBudget(desiredGrowThreads, budgetRam, workerRam, weak
 }
 
 /**
- * Distributes one worker task across the free fleet RAM, copying worker scripts
- * as needed. Mutates both fleet free RAM and the shared scheduling budget.
+ * Places hack and grow work on one host so their thread effects remain a single
+ * group. Weaken work may span the fleet. Mutates fleet free RAM and budget.
  */
 async function deployTask(ns, fleet, worker, target, requestedThreads, batchId, additionalMsec, budget, timingTask = null, timing = null) {
   const workerRam = ns.getScriptRam(worker, "home");
@@ -872,12 +874,16 @@ async function deployTask(ns, fleet, worker, target, requestedThreads, batchId, 
 
   if (workerRam <= 0 || requestedThreads < 1 || budget.remaining < workerRam) return result;
 
+  const singleHost = requiresSingleHost(worker);
   let remainingThreads = requestedThreads;
   for (const host of fleet) {
     if (remainingThreads <= 0 || budget.remaining < workerRam) break;
 
     const spendableRam = Math.min(host.freeRam, budget.remaining);
-    const threads = Math.min(remainingThreads, Math.floor(spendableRam / workerRam));
+    const availableThreads = Math.floor(spendableRam / workerRam);
+    if (singleHost && availableThreads < requestedThreads) continue;
+
+    const threads = singleHost ? requestedThreads : Math.min(remainingThreads, availableThreads);
     if (threads < 1) continue;
 
     if (host.host !== "home") {
@@ -902,9 +908,50 @@ async function deployTask(ns, fleet, worker, target, requestedThreads, batchId, 
     result.processes += 1;
     result.ramUsed += usedRam;
     result.threads += threads;
+
+    if (singleHost) break;
   }
 
   return result;
+}
+
+/** Returns whether an operation's thread count must run as one process. */
+function requiresSingleHost(worker) {
+  return worker === HACK_WORKER || worker === GROW_WORKER;
+}
+
+/** Checks whether every task in a batch can be placed before any worker starts. */
+function canPlaceTasks(fleet, tasks, availableRam, ns) {
+  const simulatedFleet = fleet.map((host) => ({ ...host }));
+  let remainingRam = availableRam;
+
+  for (const task of tasks) {
+    const workerRam = ns.getScriptRam(task.worker, "home");
+    if (workerRam <= 0 || task.threads < 1) return false;
+
+    if (requiresSingleHost(task.worker)) {
+      const requiredRam = task.threads * workerRam;
+      const host = simulatedFleet.find((candidate) => Math.min(candidate.freeRam, remainingRam) >= requiredRam);
+      if (!host) return false;
+      host.freeRam -= requiredRam;
+      remainingRam -= requiredRam;
+      continue;
+    }
+
+    let remainingThreads = task.threads;
+    for (const host of simulatedFleet) {
+      const threads = Math.min(remainingThreads, Math.floor(Math.min(host.freeRam, remainingRam) / workerRam));
+      if (threads < 1) continue;
+      const usedRam = threads * workerRam;
+      host.freeRam -= usedRam;
+      remainingRam -= usedRam;
+      remainingThreads -= threads;
+      if (remainingThreads === 0) break;
+    }
+    if (remainingThreads > 0) return false;
+  }
+
+  return true;
 }
 
 /** Records whether a worker launch could still start before its planned time. */
