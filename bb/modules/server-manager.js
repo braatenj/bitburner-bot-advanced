@@ -13,7 +13,7 @@ export async function main(ns) {
 
     const status = buildStatus(result);
     if (!options.quiet && status !== lastStatus) {
-      ns.tprint(`[bb:cloud] ${status}`);
+      ns.tprintf("%s", `[bb:cloud] ${status}`);
       lastStatus = status;
     }
 

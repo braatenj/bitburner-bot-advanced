@@ -13,12 +13,12 @@ export async function runBitNodeDaemon(ns, profile) {
   const options = parseRuntimeOptions(ns.args);
   const services = buildServices(ns, profile, ns.args, options);
   if (services.length === 0) {
-    ns.tprint(`[bb:bn${profile.bitNode}] No modules enabled.`);
+    ns.tprintf("%s", `[bb:bn${profile.bitNode}] No modules enabled.`);
     return;
   }
 
   if (!options.quiet) {
-    ns.tprint(`[bb:bn${profile.bitNode}] ${profile.name}; modules: ${services.map((service) => service.label).join(", ")}.`);
+    ns.tprintf("%s", `[bb:bn${profile.bitNode}] ${profile.name}; modules: ${services.map((service) => service.label).join(", ")}.`);
   }
 
   if (options.watch) {
@@ -86,13 +86,13 @@ function contextHasSingularity(ns, contextPath) {
 function startServices(ns, services) {
   const pending = services.filter((service) => !ns.scriptRunning(service.script, "home"));
   if (pending.length === 0) {
-    ns.tprint("[bb] All enabled modules are already running.");
+    ns.tprintf("%s", "[bb] All enabled modules are already running.");
     return;
   }
 
   const finalService = pending.pop();
   for (const service of pending) startService(ns, service);
-  ns.tprint(`[bb] Spawning ${finalService.script}.`);
+  ns.tprintf("%s", `[bb] Spawning ${finalService.script}.`);
   ns.spawn(finalService.script, { threads: 1, spawnDelay: 0 }, ...finalService.args);
 }
 
@@ -108,5 +108,5 @@ async function watchServices(ns, services, pollMs) {
 function startService(ns, service) {
   const pid = ns.exec(service.script, "home", 1, ...service.args);
   if (pid === 0) ns.print(`[bb] Failed to start ${service.script}; waiting for RAM.`);
-  else ns.tprint(`[bb] Started ${service.script} with pid ${pid}.`);
+  else ns.tprintf("%s", `[bb] Started ${service.script} with pid ${pid}.`);
 }

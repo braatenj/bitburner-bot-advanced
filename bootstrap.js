@@ -7,14 +7,14 @@ export async function main(ns) {
   const bootstrapOptions = parseBootstrapOptions(args);
 
   if (ns.getHostname() !== "home") {
-    ns.tprint("[bb] Run this bootstrapper from home so downloaded scripts and spawn handoff use the expected host.");
+    ns.tprintf("%s", "[bb] Run this bootstrapper from home so downloaded scripts and spawn handoff use the expected host.");
     return;
   }
 
-  ns.tprint(`[bb] Downloading manifest: ${manifestUrl}`);
+  ns.tprintf("%s", `[bb] Downloading manifest: ${manifestUrl}`);
   const manifestOk = await ns.wget(manifestUrl, DEFAULT_MANIFEST_TARGET, "home");
   if (!manifestOk) {
-    ns.tprint("[bb] Failed to download manifest.");
+    ns.tprintf("%s", "[bb] Failed to download manifest.");
     return;
   }
 
@@ -24,7 +24,7 @@ export async function main(ns) {
   const baseUrl = resolveBaseUrl(manifestUrl, manifest.baseUrl);
   const files = normalizeFiles(manifest.files);
   if (files.length === 0) {
-    ns.tprint("[bb] Manifest did not contain any files.");
+    ns.tprintf("%s", "[bb] Manifest did not contain any files.");
     return;
   }
 
@@ -36,24 +36,24 @@ export async function main(ns) {
       ns.print(`[bb] downloaded ${file.path}`);
     } else {
       failures += 1;
-      ns.tprint(`[bb] failed: ${sourceUrl} -> ${file.path}`);
+      ns.tprintf("%s", `[bb] failed: ${sourceUrl} -> ${file.path}`);
     }
   }
 
   if (failures > 0) {
-    ns.tprint(`[bb] Download stopped with ${failures} failed file(s).`);
+    ns.tprintf("%s", `[bb] Download stopped with ${failures} failed file(s).`);
     return;
   }
 
-  ns.tprint(`[bb] Installed ${files.length} file(s) from manifest ${manifest.name || ""} ${manifest.version || ""}`.trim());
+  ns.tprintf("%s", `[bb] Installed ${files.length} file(s) from manifest ${manifest.name || ""} ${manifest.version || ""}`.trim());
 
   if (bootstrapOptions.noLaunch) {
-    ns.tprint("[bb] Launch skipped because --no-launch was provided.");
+    ns.tprintf("%s", "[bb] Launch skipped because --no-launch was provided.");
     return;
   }
 
   const entry = String(manifest.entry || "/bb/daemon/supervisor.js");
-  ns.tprint(`[bb] Spawning ${entry}.`);
+  ns.tprintf("%s", `[bb] Spawning ${entry}.`);
   ns.spawn(entry, { threads: 1, spawnDelay: 0 }, ...bootstrapOptions.forwardedArgs);
 }
 
@@ -85,7 +85,7 @@ function readManifest(ns, path) {
   try {
     return JSON.parse(content);
   } catch (error) {
-    ns.tprint(`[bb] Manifest is not valid JSON: ${String(error)}`);
+    ns.tprintf("%s", `[bb] Manifest is not valid JSON: ${String(error)}`);
     return null;
   }
 }

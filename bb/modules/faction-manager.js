@@ -35,7 +35,7 @@ export async function main(ns) {
   const options = parseArgs(ns.args);
 
   if (options.factions.length === 0) {
-    ns.tprint("[bb:factions] No faction route configured; stopping.");
+    ns.tprintf("%s", "[bb:factions] No faction route configured; stopping.");
     return;
   }
 
@@ -60,7 +60,7 @@ export async function main(ns) {
         report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction} before installing.`);
       }
       ns.rm(CLOUD_HOSTS_STATE_FILE);
-      ns.tprint(`[bb:factions] Installing ${queued.length} queued augmentation(s); restarting ${RESTART_SCRIPT}.`);
+      ns.tprintf("%s", `[bb:factions] Installing ${queued.length} queued augmentation(s); restarting ${RESTART_SCRIPT}.`);
       ns.singularity.installAugmentations(RESTART_SCRIPT);
       return;
     } else {
@@ -337,7 +337,7 @@ function startHackingContracts(ns, candidate, options) {
 }
 
 function report(ns, options, message) {
-  if (!options.quiet) ns.tprint(`[bb:factions] ${message}`);
+  if (!options.quiet) ns.tprintf("%s", `[bb:factions] ${message}`);
 }
 
 function writeState(ns, { affordable, backdoor, candidates, joined, members, options, queued }) {

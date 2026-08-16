@@ -15,11 +15,11 @@ export async function main(ns) {
 
   const daemon = `${BITNODE_DAEMON_PREFIX}${context.bitNode}.js`;
   if (!ns.fileExists(daemon, "home")) {
-    ns.tprint(`[bb] No daemon is installed for BitNode ${context.bitNode}: ${daemon}`);
+    ns.tprintf("%s", `[bb] No daemon is installed for BitNode ${context.bitNode}: ${daemon}`);
     return;
   }
 
-  ns.tprint(`[bb] BitNode ${context.bitNode}; source files: ${formatSourceFiles(context.sourceFiles) || "none active"}. Starting ${daemon}.`);
+  ns.tprintf("%s", `[bb] BitNode ${context.bitNode}; source files: ${formatSourceFiles(context.sourceFiles) || "none active"}. Starting ${daemon}.`);
   ns.spawn(daemon, { threads: 1, spawnDelay: 0 }, ...ns.args);
 }
 
@@ -56,7 +56,7 @@ function readResetInfo(ns) {
   try {
     return ns.getResetInfo();
   } catch (error) {
-    ns.tprint(`[bb] Could not read reset info, assuming BitNode 1 with no Source-Files: ${String(error)}`);
+    ns.tprintf("%s", `[bb] Could not read reset info, assuming BitNode 1 with no Source-Files: ${String(error)}`);
     return { currentNode: 1, ownedSF: new Map() };
   }
 }

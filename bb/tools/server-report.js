@@ -266,13 +266,13 @@ function printReport(ns, rows, totalRam, options, formulaContext, workerRam) {
     padLeft("EXPECTED $/SEC", 16),
   ].join(" ");
 
-  ns.tprint(`[bb:servers] total rooted RAM=${formatRam(totalRam)}; formulas=${formulaContext.enabled ? "yes" : "no"}; worker RAM=${workerRam.min > 0 ? "ready" : "missing"}`);
-  ns.tprint(`[bb:servers] scoring assumes max money/min security, ${formatPercent(options.moneyBuffer)} money buffer, and ${options.batchGapMs}ms batch gap.`);
-  ns.tprint(header);
-  ns.tprint("-".repeat(header.length));
+  ns.tprintf("%s", `[bb:servers] total rooted RAM=${formatRam(totalRam)}; formulas=${formulaContext.enabled ? "yes" : "no"}; worker RAM=${workerRam.min > 0 ? "ready" : "missing"}`);
+  ns.tprintf("%s", `[bb:servers] scoring assumes max money/min security, ${formatPercent(options.moneyBuffer)} money buffer, and ${options.batchGapMs}ms batch gap.`);
+  ns.tprintf("%s", header);
+  ns.tprintf("%s", "-".repeat(header.length));
 
   for (const row of rows) {
-    ns.tprint([
+    ns.tprintf("%s", [
       padRight(row.server, 22),
       padLeft(row.root ? "yes" : "no", 4),
       padLeft(row.requiredLevel, 5),

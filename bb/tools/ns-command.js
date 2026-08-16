@@ -9,7 +9,7 @@
  * `singularity.getCurrentWork`). Arguments are passed through as supplied.
  * Prefix an argument with `json:` to pass an object or array, such as
  * `json:{"threads":4}`. The result or any invocation error is printed with
- * `tprint`, so it appears directly in the Bitburner terminal.
+ * `tprintf`, so it appears directly in the Bitburner terminal without a script prefix.
  */
 
 const BASE_SCRIPT_RAM = 1.6;
@@ -26,16 +26,16 @@ export async function main(ns) {
   try {
     const resolved = resolveCommand(ns, command);
     if (!resolved) {
-      ns.tprint(`[bb:ns] Unknown or unsafe Netscript command: ${command}`);
+      ns.tprintf("%s", `[bb:ns] Unknown or unsafe Netscript command: ${command}`);
       return;
     }
 
     reserveCommandRam(ns, command);
     const args = rawArgs.map(parseArgument);
     const result = await resolved.fn.apply(resolved.receiver, args);
-    ns.tprint(`[bb:ns] ${command} => ${formatResult(result)}`);
+    ns.tprintf("%s", `[bb:ns] ${command} => ${formatResult(result)}`);
   } catch (error) {
-    ns.tprint(`[bb:ns] ${command} failed: ${formatError(error)}`);
+    ns.tprintf("%s", `[bb:ns] ${command} failed: ${formatError(error)}`);
   }
 }
 
@@ -125,7 +125,7 @@ function formatError(error) {
 
 /** Prints examples that demonstrate top-level, namespaced, and object arguments. */
 function printUsage(ns) {
-  ns.tprint("[bb:ns] Usage: run /bb/tools/ns-command.js COMMAND [ARG ...]");
-  ns.tprint("[bb:ns] Examples: getHackingLevel | getServerMoneyAvailable n00dles | singularity.getCurrentWork");
-  ns.tprint("[bb:ns] Pass objects or arrays as json:{...} or json:[...].");
+  ns.tprintf("%s", "[bb:ns] Usage: run /bb/tools/ns-command.js COMMAND [ARG ...]");
+  ns.tprintf("%s", "[bb:ns] Examples: getHackingLevel | getServerMoneyAvailable n00dles | singularity.getCurrentWork");
+  ns.tprintf("%s", "[bb:ns] Pass objects or arrays as json:{...} or json:[...].");
 }

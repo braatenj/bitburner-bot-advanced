@@ -253,7 +253,7 @@ function compareDarkwebPrograms(left, right) {
 }
 
 function reportDarkwebPurchases(ns, options, purchased) {
-  if (!options.quiet && purchased.length > 0) ns.tprint(`[bb:hack] Dark-web purchase: ${purchased.join(", ")}.`);
+  if (!options.quiet && purchased.length > 0) ns.tprintf("%s", `[bb:hack] Dark-web purchase: ${purchased.join(", ")}.`);
 }
 
 /** Breadth-first scans the network from home and returns each discovered host once. */
@@ -970,7 +970,7 @@ function adjustBatchGap(ns, options, currentGapMs, launch) {
 
   const nextGapMs = Math.min(MAX_BATCH_GAP_MS, Math.max(currentGapMs + 25, Math.ceil(currentGapMs * 1.25 / 25) * 25));
   if (nextGapMs > currentGapMs && !options.quiet) {
-    ns.tprint(`[bb:hack] Batch launch was late by up to ${launch.timing.maxLateMs}ms; increasing gap from ${currentGapMs}ms to ${nextGapMs}ms.`);
+    ns.tprintf("%s", `[bb:hack] Batch launch was late by up to ${launch.timing.maxLateMs}ms; increasing gap from ${currentGapMs}ms to ${nextGapMs}ms.`);
   }
   return nextGapMs;
 }
