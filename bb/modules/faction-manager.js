@@ -55,6 +55,10 @@ export async function main(ns) {
     } else if (donation) {
       report(ns, options, `Donated $${ns.format.number(donation.amount)} to ${donation.faction} for ${ns.format.number(donation.rep)} reputation.`);
     } else if (!options.noInstall && queued.length >= options.minAugmentations && affordable.length === 0) {
+      const neuroFlux = buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
+      if (neuroFlux.count > 0) {
+        report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction} before installing.`);
+      }
       ns.rm(CLOUD_HOSTS_STATE_FILE);
       ns.tprint(`[bb:factions] Installing ${queued.length} queued augmentation(s); restarting ${RESTART_SCRIPT}.`);
       ns.singularity.installAugmentations(RESTART_SCRIPT);
@@ -267,6 +271,25 @@ function buyBestAugmentation(ns, affordable, options) {
     if (ns.singularity.purchaseAugmentation(candidate.faction, candidate.augmentation)) return candidate;
   }
   return null;
+}
+
+/** Buys repeatable NeuroFlux levels only after normal augmentations trigger a reset. */
+function buyNeuroFluxGovernor(ns, factions, moneyBuffer) {
+  const sellers = factions
+    .filter((faction) => ns.singularity.getAugmentationsFromFaction(faction).includes(NEUROFLUX_GOVERNOR))
+    .sort((left, right) => ns.singularity.getFactionRep(right) - ns.singularity.getFactionRep(left));
+  const result = { count: 0, faction: sellers[0] || "" };
+
+  while (result.faction) {
+    const price = ns.singularity.getAugmentationPrice(NEUROFLUX_GOVERNOR);
+    const repRequired = ns.singularity.getAugmentationRepReq(NEUROFLUX_GOVERNOR);
+    const availableMoney = ns.getServerMoneyAvailable("home") - moneyBuffer;
+    if (price > availableMoney || ns.singularity.getFactionRep(result.faction) < repRequired) break;
+    if (!ns.singularity.purchaseAugmentation(result.faction, NEUROFLUX_GOVERNOR)) break;
+    result.count += 1;
+  }
+
+  return result;
 }
 
 function donateForHighestRep(ns, candidates, player, options) {
