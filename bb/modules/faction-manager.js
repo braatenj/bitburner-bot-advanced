@@ -63,6 +63,13 @@ export async function main(ns) {
       ns.tprintf("%s", `[bb:factions] Installing ${queued.length} queued augmentation(s); restarting ${RESTART_SCRIPT}.`);
       ns.singularity.installAugmentations(RESTART_SCRIPT);
       return;
+    } else if (candidates.length === 0) {
+      const neuroFlux = buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
+      if (neuroFlux.count > 0) {
+        report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction}; no other augmentations remain.`);
+      } else if (!options.quiet) {
+        ns.print("[bb:factions] No other augmentations remain; waiting for enough money or faction reputation for NeuroFlux Governor.");
+      }
     } else {
       const target = candidates[0];
       const working = startHackingContracts(ns, target, options);
@@ -273,7 +280,7 @@ function buyBestAugmentation(ns, affordable, options) {
   return null;
 }
 
-/** Buys repeatable NeuroFlux levels only after normal augmentations trigger a reset. */
+/** Buys repeatable NeuroFlux levels once no normal augmentation purchase is pending. */
 function buyNeuroFluxGovernor(ns, factions, moneyBuffer) {
   const sellers = factions
     .filter((faction) => ns.singularity.getAugmentationsFromFaction(faction).includes(NEUROFLUX_GOVERNOR))
