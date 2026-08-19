@@ -47,6 +47,7 @@ export async function main(ns) {
   const options = parseArgs(ns.args);
   let lastStatus = "";
   let effectiveBatchGapMs = options.batchGapMs;
+  let activeBatchTarget = "";
 
   while (true) {
     const darkweb = manageDarkweb(ns, options);
@@ -71,8 +72,17 @@ export async function main(ns) {
     const incomeEvaluations = joesguns.active
       ? evaluations.filter((evaluation) => evaluation.server !== JOESGUNS)
       : evaluations;
-    const primary = choosePrimaryEvaluation(incomeEvaluations, options.target);
-    const secondary = chooseSecondaryPrepEvaluation(ns, incomeEvaluations, primary, options);
+    const preferred = choosePrimaryEvaluation(incomeEvaluations, options.target);
+    const active = chooseActiveEvaluation(incomeEvaluations, activeBatchTarget);
+    const keepActiveTarget = !options.target
+      && active
+      && preferred
+      && active.server !== preferred.server
+      && !isPrepped(ns, preferred.server, schedulingOptions);
+    const primary = keepActiveTarget ? active : preferred;
+    const secondary = keepActiveTarget
+      ? preferred
+      : chooseSecondaryPrepEvaluation(ns, incomeEvaluations, primary, options);
 
     let primaryLaunch = emptyLaunch("primary");
     if (primary && isPrepped(ns, primary.server, schedulingOptions)) {
@@ -80,6 +90,7 @@ export async function main(ns) {
     } else if (primary) {
       primaryLaunch = await schedulePrep(ns, fleet, rooted, primary.server, incomeRamBudget, schedulingOptions, formulaContext, "primary");
     }
+    if (primaryLaunch.mode === "batch") activeBatchTarget = primary.server;
 
     let secondaryLaunch = emptyLaunch("secondary");
     let joesgunsLaunch = emptyLaunch("joesguns");
@@ -666,6 +677,12 @@ function choosePrimaryEvaluation(evaluations, forcedTarget) {
   }
 
   return evaluations[0] || null;
+}
+
+/** Returns the still-eligible target currently receiving HWGW batches. */
+function chooseActiveEvaluation(evaluations, activeTarget) {
+  if (!activeTarget) return null;
+  return evaluations.find((evaluation) => evaluation.server === activeTarget) || null;
 }
 
 /** Returns the best unprepped target other than the primary for background preparation. */
