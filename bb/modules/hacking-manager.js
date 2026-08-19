@@ -6,6 +6,8 @@
  * The best available target is used for HWGW batches once it is prepped; until
  * then, RAM is used to weaken and grow it. A separate, unprepped target may be
  * prepared concurrently with the RAM reserved for that purpose.
+ * Above hacking level 5,000, spare purchased-server RAM grows joesguns after
+ * that server has been brought to maximum money and minimum security.
  *
  * Optional arguments:
  * --target HOST              Prefer HOST when it is an eligible target.
@@ -34,6 +36,8 @@ const GROW_SECURITY_PER_THREAD = 0.004;
 const MIN_MONEY = 1;
 const MAX_BATCH_GAP_MS = 2000;
 const DEFAULT_DARKWEB_MONEY_BUFFER = 200000;
+const JOESGUNS = "joesguns";
+const JOESGUNS_HACKING_LEVEL = 5000;
 const PORT_PROGRAMS = ["BruteSSH.exe", "FTPCrack.exe", "relaySMTP.exe", "HTTPWorm.exe", "SQLInject.exe"];
 
 /** Runs the daemon's discovery, scheduling, reporting, and persistence loop. */
@@ -61,8 +65,14 @@ export async function main(ns) {
     const formulaContext = getFormulaContext(ns);
     const schedulingOptions = { ...options, batchGapMs: effectiveBatchGapMs };
     const evaluations = evaluateTargets(ns, rooted, incomeRamBudget, schedulingOptions, formulaContext);
-    const primary = choosePrimaryEvaluation(evaluations, options.target);
-    const secondary = chooseSecondaryPrepEvaluation(ns, evaluations, primary, options);
+    const joesguns = getJoesgunsWork(ns, rooted, schedulingOptions);
+    // Keep the XP target out of normal HWGW work so its strict prepared state
+    // is meaningful immediately before the purchased-server grow wave.
+    const incomeEvaluations = joesguns.active
+      ? evaluations.filter((evaluation) => evaluation.server !== JOESGUNS)
+      : evaluations;
+    const primary = choosePrimaryEvaluation(incomeEvaluations, options.target);
+    const secondary = chooseSecondaryPrepEvaluation(ns, incomeEvaluations, primary, options);
 
     let primaryLaunch = emptyLaunch("primary");
     if (primary && isPrepped(ns, primary.server, schedulingOptions)) {
@@ -72,13 +82,18 @@ export async function main(ns) {
     }
 
     let secondaryLaunch = emptyLaunch("secondary");
-    if (secondary) {
+    let joesgunsLaunch = emptyLaunch("joesguns");
+    if (joesguns.active && joesguns.prepped) {
+      joesgunsLaunch = await scheduleJoesgunsGrowth(ns, fleet);
+    } else if (joesguns.active) {
+      joesgunsLaunch = await schedulePrep(ns, fleet, rooted, JOESGUNS, sumFleetRam(fleet), joesguns.options, formulaContext, "joesguns");
+    } else if (secondary) {
       secondaryLaunch = await schedulePrep(ns, fleet, rooted, secondary.server, sumFleetRam(fleet), schedulingOptions, formulaContext, "secondary");
     }
 
     effectiveBatchGapMs = adjustBatchGap(ns, options, effectiveBatchGapMs, primaryLaunch);
 
-    const status = buildStatus(rooted, servers, totalFreeRam, prepReserveRam, formulaContext, primary, secondary, primaryLaunch, secondaryLaunch);
+    const status = buildStatus(rooted, servers, totalFreeRam, prepReserveRam, formulaContext, primary, secondary, primaryLaunch, secondaryLaunch, joesgunsLaunch);
     if (!options.quiet && status !== lastStatus) {
       ns.print(`[bb:hack] ${status}`);
       printManualHints(ns, rooted.length, servers.length);
@@ -104,7 +119,9 @@ export async function main(ns) {
       launched: {
         primary: primaryLaunch,
         secondary: secondaryLaunch,
+        joesguns: joesgunsLaunch,
       },
+      joesguns: { active: joesguns.active, prepped: joesguns.prepped },
       topTargets: evaluations.slice(0, 10).map(summarizeEvaluation),
       options: summarizeOptions({ ...options, batchGapMs: effectiveBatchGapMs }),
     });
@@ -361,6 +378,56 @@ function getDrainingHosts(ns) {
 /** Returns the currently schedulable free RAM across the fleet. */
 function sumFleetRam(fleet) {
   return fleet.reduce((total, host) => total + host.freeRam, 0);
+}
+
+/** Enables the high-level joesguns grow workload only for an accessible target. */
+function getJoesgunsWork(ns, rootedServers, options) {
+  const active = ns.getHackingLevel() > JOESGUNS_HACKING_LEVEL && rootedServers.includes(JOESGUNS);
+  const strictPrepOptions = { ...options, prepMoneyRatio: 1, prepSecurityBuffer: 0 };
+  return {
+    active,
+    options: strictPrepOptions,
+    prepped: active && isPrepped(ns, JOESGUNS, strictPrepOptions),
+  };
+}
+
+/** Fills spare purchased-server RAM with grow work for the fully prepared XP target. */
+async function scheduleJoesgunsGrowth(ns, fleet) {
+  const purchased = getCloudHostNames(ns);
+  const cloudFleet = fleet.filter((host) => purchased.has(host.host));
+  const workerRam = ns.getScriptRam(GROW_WORKER, "home");
+  const budget = { remaining: sumFleetRam(cloudFleet) };
+  const launched = {
+    label: "joesguns",
+    mode: "grow",
+    target: JOESGUNS,
+    launchedProcesses: 0,
+    launchedThreads: 0,
+    ramUsedGb: 0,
+  };
+
+  if (workerRam <= 0) return launched;
+
+  const batchId = `joesguns-grow-${Date.now()}`;
+  for (const host of cloudFleet) {
+    const threads = Math.floor(host.freeRam / workerRam);
+    const result = await deployTask(ns, [host], GROW_WORKER, JOESGUNS, threads, batchId, 0, budget);
+    launched.launchedProcesses += result.processes;
+    launched.launchedThreads += result.threads;
+    launched.ramUsedGb += result.ramUsed;
+  }
+
+  launched.ramUsedGb = roundRam(launched.ramUsedGb);
+  return launched;
+}
+
+/** Gets purchased-server names without preventing ordinary hacking in unsupported nodes. */
+function getCloudHostNames(ns) {
+  try {
+    return new Set(ns.cloud.getServerNames());
+  } catch (_error) {
+    return new Set();
+  }
 }
 
 /** Calculates the bounded portion of fleet RAM reserved for secondary preparation. */
@@ -1031,7 +1098,7 @@ function resolveHomeReserve(ns, reserveHome) {
 }
 
 /** Formats the concise status line printed when the daemon state changes. */
-function buildStatus(rooted, servers, freeRam, prepReserveRam, formulaContext, primary, secondary, primaryLaunch, secondaryLaunch) {
+function buildStatus(rooted, servers, freeRam, prepReserveRam, formulaContext, primary, secondary, primaryLaunch, secondaryLaunch, joesgunsLaunch) {
   const target = primary ? primary.server : "none";
   const secondaryTarget = secondary ? secondary.server : "none";
   const mps = primary ? formatMoney(primary.expectedMoneyPerSecond) : "$0";
@@ -1045,6 +1112,7 @@ function buildStatus(rooted, servers, freeRam, prepReserveRam, formulaContext, p
     `late=${primaryLaunch.timing?.lateProcesses || 0}`,
     `secondary=${secondaryTarget}`,
     `prepThreads=${secondaryLaunch.launchedThreads || 0}`,
+    `joesguns=${joesgunsLaunch.mode}:${joesgunsLaunch.launchedThreads || 0}`,
     `ram=${roundRam(freeRam)}GB`,
     `prepReserve=${roundRam(prepReserveRam)}GB`,
     `rooted=${rooted.length}/${servers.length}`,
