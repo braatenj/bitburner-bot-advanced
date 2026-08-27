@@ -816,7 +816,9 @@ async function scheduleHackBatches(ns, fleet, evaluation, budgetRam, options) {
 /** Schedules a full or partial weaken/grow preparation cycle within a RAM budget. */
 async function schedulePrep(ns, fleet, rootedServers, target, budgetRam, options, formulaContext, label) {
   const budget = { remaining: Math.max(0, budgetRam) };
-  const plan = buildPrepPlan(ns, target, budget.remaining, options, formulaContext);
+  const workerRam = getWorkerRam(ns);
+  const maxGrowThreads = getMaxSingleHostThreads(fleet, budget.remaining, workerRam.grow);
+  const plan = buildPrepPlan(ns, target, budget.remaining, options, formulaContext, maxGrowThreads);
   const launched = {
     label,
     mode: "prep",
@@ -827,7 +829,7 @@ async function schedulePrep(ns, fleet, rootedServers, target, budgetRam, options
     ramUsedGb: 0,
     status: plan.status,
   };
-  debugLog(ns, options, `prep ${label}/${target}: status=${plan.status} budget=${roundRam(budget.remaining)}GB tasks=${plan.tasks.map((task) => `${task.kind}:${task.threads}`).join(",") || "none"}`);
+  debugLog(ns, options, `prep ${label}/${target}: status=${plan.status} budget=${roundRam(budget.remaining)}GB maxGrowThreads=${maxGrowThreads} tasks=${plan.tasks.map((task) => `${task.kind}:${task.threads}`).join(",") || "none"}`);
 
   if (plan.status === "full-cycle" && hasActiveFullPrepBatch(ns, rootedServers, target)) {
     launched.status = "waiting-for-full-cycle";
@@ -837,11 +839,19 @@ async function schedulePrep(ns, fleet, rootedServers, target, budgetRam, options
 
   const batchType = plan.status === "full-cycle" ? "prep-full" : "prep-partial";
   const batchId = `${batchType}-${label}-${Date.now()}-${target}`;
-  for (const task of plan.tasks) {
+  // Reserve the one host required for grow before distributing weakens. The
+  // delays embedded in the tasks still preserve the intended finish order.
+  const tasks = [...plan.tasks].sort((left, right) => Number(right.worker === GROW_WORKER) - Number(left.worker === GROW_WORKER));
+  for (const task of tasks) {
     const result = await deployTask(ns, fleet, task.worker, target, task.threads, batchId, task.additionalMsec, budget);
     launched.launchedProcesses += result.processes;
     launched.launchedThreads += result.threads;
     launched.ramUsedGb += result.ramUsed;
+    if (task.worker === GROW_WORKER && result.threads < task.threads) {
+      launched.status = "grow-placement-failed";
+      debugLog(ns, options, `prep ${label}/${target}: grow placement failed; skipping compensating weakens`);
+      break;
+    }
   }
 
   launched.ramUsedGb = roundRam(launched.ramUsedGb);
@@ -866,7 +876,7 @@ function hasActiveFullPrepBatch(ns, rootedServers, target) {
  * Priority is security reduction, followed by a grow plus its compensating
  * weaken; if neither paired operation fits, it falls back to grow alone.
  */
-function buildPrepPlan(ns, target, budgetRam, options, formulaContext) {
+function buildPrepPlan(ns, target, budgetRam, options, formulaContext, maxGrowThreads) {
   if (budgetRam <= 0) return { status: "no-ram", tasks: [] };
 
   const workerRam = getWorkerRam(ns);
@@ -901,7 +911,7 @@ function buildPrepPlan(ns, target, budgetRam, options, formulaContext) {
     return { status: "already-prepped", tasks: [] };
   }
 
-  if (fullRam <= budgetRam) {
+  if (fullRam <= budgetRam && desiredGrowThreads <= maxGrowThreads) {
     return {
       status: "full-cycle",
       tasks: buildPrepTasks(desiredFirstWeakenThreads, desiredGrowThreads, desiredSecondWeakenThreads, metrics, options),
@@ -918,7 +928,7 @@ function buildPrepPlan(ns, target, budgetRam, options, formulaContext) {
     };
   }
 
-  const growThreads = findGrowThreadsForBudget(desiredGrowThreads, budgetRam, workerRam, weakenPerThread);
+  const growThreads = findGrowThreadsForBudget(Math.min(desiredGrowThreads, maxGrowThreads), budgetRam, workerRam, weakenPerThread);
   if (growThreads > 0) {
     const secondWeakenThreads = Math.ceil((growThreads * GROW_SECURITY_PER_THREAD) / weakenPerThread);
     return {
@@ -927,11 +937,20 @@ function buildPrepPlan(ns, target, budgetRam, options, formulaContext) {
     };
   }
 
-  const fallbackGrowThreads = Math.min(desiredGrowThreads, Math.floor(budgetRam / workerRam.grow));
+  const fallbackGrowThreads = Math.min(desiredGrowThreads, maxGrowThreads, Math.floor(budgetRam / workerRam.grow));
   return {
     status: fallbackGrowThreads > 0 ? "grow-only" : "insufficient-ram",
     tasks: fallbackGrowThreads > 0 ? buildPrepTasks(0, fallbackGrowThreads, 0, metrics, options) : [],
   };
+}
+
+/** Returns grow threads that fit together on the most-capable currently free host. */
+function getMaxSingleHostThreads(fleet, budgetRam, growRam) {
+  if (growRam <= 0 || budgetRam < growRam) return 0;
+  return fleet.reduce(
+    (maximum, host) => Math.max(maximum, Math.floor(Math.min(host.freeRam, budgetRam) / growRam)),
+    0,
+  );
 }
 
 /** Builds ordered prep tasks whose delays make weaken, grow, then weaken finish in sequence. */
