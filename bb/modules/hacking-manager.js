@@ -34,6 +34,9 @@ const STATE_FILE = "/bb/data/early-hack-state.json";
 const HACK_SECURITY_PER_THREAD = 0.002;
 const GROW_SECURITY_PER_THREAD = 0.004;
 const MIN_MONEY = 1;
+// Netscript server state is floating point. Treat only numerical noise as
+// prepared; a real grow-security increase (0.004 per thread) remains visible.
+const PREP_SECURITY_EPSILON = 1e-6;
 const MAX_BATCH_GAP_MS = 2000;
 const DEFAULT_DARKWEB_MONEY_BUFFER = 200000;
 const JOESGUNS = "joesguns";
@@ -1094,7 +1097,7 @@ function isPrepped(ns, server, options) {
 
     return maxMoney > 0
       && money >= maxMoney * options.prepMoneyRatio
-      && security <= minSecurity + options.prepSecurityBuffer;
+      && security <= minSecurity + options.prepSecurityBuffer + PREP_SECURITY_EPSILON;
   } catch (_error) {
     return false;
   }

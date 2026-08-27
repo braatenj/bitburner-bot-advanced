@@ -339,5 +339,5 @@ function formatRam(value) {
 }
 
 function formatSecurity(value) {
-  return Number(value).toFixed(2);
+  return Number(value).toFixed(4);
 }
