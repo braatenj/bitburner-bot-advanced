@@ -22,6 +22,7 @@
  * --darkweb-money-buffer N   Cash retained before TOR/program purchases.
  * --no-darkweb               Disable Singularity TOR and dark-web purchases.
  * --context PATH             Runtime context used to detect Singularity access.
+ * --debug                    Print detailed scheduling decisions to the script log.
  * --quiet                    Suppress status and manual-unlock hints.
  */
 const HACK_WORKER = "/bb/workers/hack.js";
@@ -70,6 +71,7 @@ export async function main(ns) {
     const schedulingOptions = { ...options, batchGapMs: effectiveBatchGapMs };
     const evaluations = evaluateTargets(ns, rooted, incomeRamBudget, schedulingOptions, formulaContext);
     const joesguns = getJoesgunsWork(ns, rooted, schedulingOptions);
+    logJoesgunsReadiness(ns, schedulingOptions, joesguns);
     // Keep the XP target out of normal HWGW work so its strict prepared state
     // is meaningful immediately before the purchased-server grow wave.
     const incomeEvaluations = joesguns.active
@@ -93,17 +95,20 @@ export async function main(ns) {
     } else if (primary) {
       primaryLaunch = await schedulePrep(ns, fleet, rooted, primary.server, incomeRamBudget, schedulingOptions, formulaContext, "primary");
     }
+    debugLog(ns, schedulingOptions, `primary ${primary?.server || "none"}: mode=${primaryLaunch.mode} threads=${primaryLaunch.launchedThreads || 0} batches=${primaryLaunch.launchedBatches || 0}`);
     if (primaryLaunch.mode === "batch") activeBatchTarget = primary.server;
 
     let secondaryLaunch = emptyLaunch("secondary");
     let joesgunsLaunch = emptyLaunch("joesguns");
     if (joesguns.active && joesguns.prepped) {
-      joesgunsLaunch = await scheduleJoesgunsGrowth(ns, fleet);
+      joesgunsLaunch = await scheduleJoesgunsGrowth(ns, fleet, schedulingOptions);
     } else if (joesguns.active) {
       joesgunsLaunch = await schedulePrep(ns, fleet, rooted, JOESGUNS, sumFleetRam(fleet), joesguns.options, formulaContext, "joesguns");
     } else if (secondary) {
       secondaryLaunch = await schedulePrep(ns, fleet, rooted, secondary.server, sumFleetRam(fleet), schedulingOptions, formulaContext, "secondary");
     }
+    debugLog(ns, schedulingOptions, `joesguns launch: mode=${joesgunsLaunch.mode} status=${joesgunsLaunch.status || "-"} threads=${joesgunsLaunch.launchedThreads || 0}`);
+    debugLog(ns, schedulingOptions, `secondary ${secondary?.server || "none"}: mode=${secondaryLaunch.mode} status=${secondaryLaunch.status || "-"} threads=${secondaryLaunch.launchedThreads || 0}`);
 
     effectiveBatchGapMs = adjustBatchGap(ns, options, effectiveBatchGapMs, primaryLaunch);
 
@@ -150,6 +155,7 @@ function parseArgs(rawArgs) {
     batchGapMs: 250,
     context: "/bb/data/context.json",
     darkwebMoneyBuffer: DEFAULT_DARKWEB_MONEY_BUFFER,
+    debug: false,
     loopDelayMs: 5000,
     moneyBuffer: 0.1,
     noDarkweb: false,
@@ -170,6 +176,7 @@ function parseArgs(rawArgs) {
     if (arg === "--batch-gap") options.batchGapMs = parseMs(rawArgs[++i], options.batchGapMs, 100);
     else if (arg === "--context") options.context = String(rawArgs[++i] || options.context);
     else if (arg === "--darkweb-money-buffer") options.darkwebMoneyBuffer = parseNumber(rawArgs[++i], options.darkwebMoneyBuffer, 0, Number.MAX_SAFE_INTEGER);
+    else if (arg === "--debug") options.debug = true;
     else if (arg === "--loop-delay") options.loopDelayMs = parseMs(rawArgs[++i], options.loopDelayMs, 1000);
     else if (arg === "--money-buffer") options.moneyBuffer = parseRatio(rawArgs[++i], options.moneyBuffer, 0, 0.95);
     else if (arg === "--no-darkweb") options.noDarkweb = true;
@@ -190,6 +197,11 @@ function parseArgs(rawArgs) {
   }
 
   return options;
+}
+
+/** Prints an opt-in diagnostic line without affecting normal daemon output. */
+function debugLog(ns, options, message) {
+  if (options.debug) ns.print(`[bb:hack:debug] ${message}`);
 }
 
 /** Converts a value to a whole number of milliseconds, or returns the fallback. */
@@ -405,8 +417,29 @@ function getJoesgunsWork(ns, rootedServers, options) {
   };
 }
 
+/** Logs the unrounded XP-target values that determine prep versus grow work. */
+function logJoesgunsReadiness(ns, options, joesguns) {
+  if (!options.debug) return;
+  if (!joesguns.active) {
+    debugLog(ns, options, `joesguns inactive: hacking=${ns.getHackingLevel()} (requires > ${JOESGUNS_HACKING_LEVEL}) or target is not rooted`);
+    return;
+  }
+
+  const security = ns.getServerSecurityLevel(JOESGUNS);
+  const minSecurity = ns.getServerMinSecurityLevel(JOESGUNS);
+  const money = ns.getServerMoneyAvailable(JOESGUNS);
+  const maxMoney = ns.getServerMaxMoney(JOESGUNS);
+  const securityLimit = minSecurity + PREP_SECURITY_EPSILON;
+  ns.print(
+    `[bb:hack:debug] joesguns active=${joesguns.active} prepped=${joesguns.prepped}`
+    + ` security=${security.toFixed(10)} min=${minSecurity.toFixed(10)}`
+    + ` delta=${(security - minSecurity).toExponential(3)} limit=${securityLimit.toFixed(10)}`
+    + ` money=${money.toFixed(2)}/${maxMoney.toFixed(2)}`,
+  );
+}
+
 /** Fills spare purchased-server RAM with grow work for the fully prepared XP target. */
-async function scheduleJoesgunsGrowth(ns, fleet) {
+async function scheduleJoesgunsGrowth(ns, fleet, options) {
   const purchased = getCloudHostNames(ns);
   const cloudFleet = fleet.filter((host) => purchased.has(host.host));
   const workerRam = ns.getScriptRam(GROW_WORKER, "home");
@@ -420,7 +453,10 @@ async function scheduleJoesgunsGrowth(ns, fleet) {
     ramUsedGb: 0,
   };
 
-  if (workerRam <= 0) return launched;
+  if (workerRam <= 0) {
+    debugLog(ns, options, "joesguns grow skipped: grow worker RAM is unavailable");
+    return launched;
+  }
 
   const batchId = `joesguns-grow-${Date.now()}`;
   for (const host of cloudFleet) {
@@ -432,6 +468,7 @@ async function scheduleJoesgunsGrowth(ns, fleet) {
   }
 
   launched.ramUsedGb = roundRam(launched.ramUsedGb);
+  debugLog(ns, options, `joesguns grow cloudHosts=${cloudFleet.length} budget=${roundRam(budget.remaining + launched.ramUsedGb)}GB launched=${launched.launchedThreads} threads in ${launched.launchedProcesses} processes`);
   return launched;
 }
 
@@ -790,9 +827,11 @@ async function schedulePrep(ns, fleet, rootedServers, target, budgetRam, options
     ramUsedGb: 0,
     status: plan.status,
   };
+  debugLog(ns, options, `prep ${label}/${target}: status=${plan.status} budget=${roundRam(budget.remaining)}GB tasks=${plan.tasks.map((task) => `${task.kind}:${task.threads}`).join(",") || "none"}`);
 
   if (plan.status === "full-cycle" && hasActiveFullPrepBatch(ns, rootedServers, target)) {
     launched.status = "waiting-for-full-cycle";
+    debugLog(ns, options, `prep ${label}/${target}: waiting for an existing full prep batch`);
     return launched;
   }
 
@@ -806,6 +845,7 @@ async function schedulePrep(ns, fleet, rootedServers, target, budgetRam, options
   }
 
   launched.ramUsedGb = roundRam(launched.ramUsedGb);
+  debugLog(ns, options, `prep ${label}/${target}: launched=${launched.launchedThreads} threads in ${launched.launchedProcesses} processes, used=${launched.ramUsedGb}GB`);
   return launched;
 }
 
@@ -1181,6 +1221,7 @@ function summarizeOptions(options) {
     batchGapMs: options.batchGapMs,
     loopDelayMs: options.loopDelayMs,
     darkwebMoneyBuffer: options.darkwebMoneyBuffer,
+    debug: options.debug,
     moneyBuffer: options.moneyBuffer,
     noDarkweb: options.noDarkweb,
     prepMoneyRatio: options.prepMoneyRatio,
