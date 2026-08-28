@@ -2,6 +2,7 @@ const HACK_DEFAULTS = ["--reserve-home", "auto", "--prep-ram-pct", "0.1"];
 const HACKING_FACTIONS = ["CyberSec", "NiteSec", "The Black Hand", "BitRunners", "Daedalus"];
 const CORPORATE_FACTIONS = ["MegaCorp", "Bachman & Associates", "NWO", "Clarke Incorporated", "OmniTek Incorporated", "Four Sigma", "KuaiGong International"];
 const COMBAT_FACTIONS = ["The Syndicate", "Speakers for the Dead", "The Dark Army", "The Covenant", "Daedalus"];
+const TIAN_DI_HUI = "Tian Di Hui";
 
 /** Per-BitNode defaults. User-supplied daemon arguments override these values. */
 export const BITNODE_PROFILES = {
@@ -27,7 +28,7 @@ function cloud(minSizeGb, moneyBuffer) {
 }
 
 function factionArgs(factions, focus) {
-  return ["--factions", factions.join(","), "--augmentation-focus", focus];
+  return ["--factions", [...new Set([TIAN_DI_HUI, ...factions])].join(","), "--augmentation-focus", focus];
 }
 
 function profile(bitNode, name, hacking, cloudHosts, factions) {

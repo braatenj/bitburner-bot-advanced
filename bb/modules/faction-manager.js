@@ -15,6 +15,9 @@
  * --min-augmentations N       Install after this many queued augs (default 3).
  * --augmentation-money-buffer MONEY  Cash never spent on augmentations.
  * --poll MS                   Evaluation interval (default 60000).
+ * The manager travels to join Tian Di Hui when it is in the route, reserves
+ * the required cash until then, and purchases its non-NeuroFlux augmentations
+ * before considering the rest of the route.
  * --no-backdoors              Disable faction-server backdoor automation.
  * --no-install                Join, work, and purchase without resetting.
  * --quiet                     Suppress terminal status messages.
@@ -23,6 +26,10 @@ const STATE_FILE = "/bb/data/faction-manager-state.json";
 const CLOUD_HOSTS_STATE_FILE = "/bb/data/cloud-hosts-state.json";
 const RESTART_SCRIPT = "/bootstrap.js";
 const NEUROFLUX_GOVERNOR = "NeuroFlux Governor";
+const TIAN_DI_HUI = "Tian Di Hui";
+const TIAN_DI_HUI_CITIES = new Set(["Chongqing", "New Tokyo", "Ishima"]);
+const TIAN_DI_HUI_MINIMUM_CASH = 1_000_000;
+const CITY_TRAVEL_COST = 200_000;
 const FACTION_BACKDOOR_SERVERS = {
   BitRunners: "run4theh111z",
   CyberSec: "CSEC",
@@ -40,21 +47,36 @@ export async function main(ns) {
   }
 
   while (true) {
-    const player = ns.getPlayer();
+    let player = ns.getPlayer();
+    const tianDiHui = pursueTianDiHui(ns, options, player);
+    player = ns.getPlayer();
     const backdoor = await installFactionBackdoor(ns, options, player.factions);
     const joined = joinInvitations(ns, options, player.factions);
+    player = ns.getPlayer();
     const members = player.factions.filter((faction) => options.factions.includes(faction));
+    tianDiHui.joined = members.includes(TIAN_DI_HUI);
+    if (tianDiHui.joined) {
+      tianDiHui.active = false;
+      tianDiHui.moneyReserve = 0;
+    }
     const queued = queuedAugmentations(ns);
-    const candidates = collectCandidates(ns, members, queued, options.focus);
-    const affordable = candidates.filter((candidate) => candidate.price <= player.money - options.moneyBuffer);
-    const donation = donateForHighestRep(ns, candidates, player, options);
+    const tianCandidates = members.includes(TIAN_DI_HUI)
+      ? collectCandidates(ns, [TIAN_DI_HUI], queued, [])
+      : [];
+    const candidates = tianCandidates.length > 0
+      ? tianCandidates
+      : collectCandidates(ns, members, queued, options.focus);
+    const waitingForTianDiHui = tianDiHui.active && tianDiHui.moneyReserve > 0;
+    const availableMoney = player.money - options.moneyBuffer - tianDiHui.moneyReserve;
+    const affordable = candidates.filter((candidate) => candidate.price <= availableMoney);
+    const donation = waitingForTianDiHui ? null : donateForHighestRep(ns, candidates, player, options);
     const bought = donation ? null : buyBestAugmentation(ns, affordable, options);
 
     if (bought) {
       report(ns, options, `Bought ${bought.augmentation} from ${bought.faction}.`);
     } else if (donation) {
       report(ns, options, `Donated $${ns.format.number(donation.amount)} to ${donation.faction} for ${ns.format.number(donation.rep)} reputation.`);
-    } else if (!options.noInstall && queued.length >= options.minAugmentations && affordable.length === 0) {
+    } else if (!options.noInstall && !waitingForTianDiHui && tianCandidates.length === 0 && queued.length >= options.minAugmentations && affordable.length === 0) {
       const neuroFlux = buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
       if (neuroFlux.count > 0) {
         report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction} before installing.`);
@@ -64,11 +86,16 @@ export async function main(ns) {
       ns.singularity.installAugmentations(RESTART_SCRIPT);
       return;
     } else if (candidates.length === 0) {
-      const neuroFlux = buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
+      const neuroFlux = waitingForTianDiHui
+        ? { count: 0, faction: "" }
+        : buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
       if (neuroFlux.count > 0) {
         report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction}; no other augmentations remain.`);
       } else if (!options.quiet) {
-        ns.print("[bb:factions] No other augmentations remain; waiting for enough money or faction reputation for NeuroFlux Governor.");
+        const status = waitingForTianDiHui
+          ? `Reserving $${ns.format.number(tianDiHui.moneyReserve)} to join Tian Di Hui.`
+          : "No other augmentations remain; waiting for enough money or faction reputation for NeuroFlux Governor.";
+        ns.print(`[bb:factions] ${status}`);
       }
     } else {
       const target = candidates[0];
@@ -81,9 +108,30 @@ export async function main(ns) {
       }
     }
 
-    writeState(ns, { affordable, backdoor, candidates, joined, members, options, queued });
+    writeState(ns, { affordable, backdoor, candidates, joined, members, options, queued, tianDiHui });
     await ns.sleep(options.pollMs);
   }
+}
+
+/** Travels to an eligible city and protects the cash needed to join Tian Di Hui. */
+function pursueTianDiHui(ns, options, player) {
+  const state = { active: false, joined: false, moneyReserve: 0, traveled: false };
+  if (!options.factions.includes(TIAN_DI_HUI) || player.factions.includes(TIAN_DI_HUI) || hasJoinedEnemy(ns, TIAN_DI_HUI, player.factions)) return state;
+
+  state.active = true;
+  const hacking = ns.getHackingLevel();
+  const inEligibleCity = TIAN_DI_HUI_CITIES.has(player.city);
+  const requiredCash = TIAN_DI_HUI_MINIMUM_CASH + (inEligibleCity ? 0 : CITY_TRAVEL_COST);
+  if (hacking >= 50) state.moneyReserve = requiredCash;
+  if (hacking < 50 || player.money < requiredCash) return state;
+
+  if (!inEligibleCity) {
+    try {
+      state.traveled = ns.singularity.travelToCity("Chongqing");
+      if (state.traveled) report(ns, options, "Traveled to Chongqing to join Tian Di Hui.");
+    } catch (_error) {}
+  }
+  return state;
 }
 
 function parseArgs(rawArgs) {
@@ -347,7 +395,7 @@ function report(ns, options, message) {
   if (!options.quiet) ns.tprintf("%s", `[bb:factions] ${message}`);
 }
 
-function writeState(ns, { affordable, backdoor, candidates, joined, members, options, queued }) {
+function writeState(ns, { affordable, backdoor, candidates, joined, members, options, queued, tianDiHui }) {
   const next = candidates[0];
   ns.write(STATE_FILE, JSON.stringify({
     affordable: affordable.length,
@@ -363,6 +411,7 @@ function writeState(ns, { affordable, backdoor, candidates, joined, members, opt
       repRequired: next.repRequired,
     },
     queued,
+    tianDiHui,
     updatedAt: Date.now(),
   }, null, 2), "w");
 }
