@@ -25,6 +25,7 @@
 const STATE_FILE = "/bb/data/faction-manager-state.json";
 const CLOUD_HOSTS_STATE_FILE = "/bb/data/cloud-hosts-state.json";
 const RESTART_SCRIPT = "/bootstrap.js";
+const DAEDALUS = "Daedalus";
 const NEUROFLUX_GOVERNOR = "NeuroFlux Governor";
 const TIAN_DI_HUI = "Tian Di Hui";
 const TIAN_DI_HUI_CITIES = new Set(["Chongqing", "New Tokyo", "Ishima"]);
@@ -79,7 +80,8 @@ export async function main(ns) {
     } else if (!options.noInstall && !waitingForTianDiHui && tianCandidates.length === 0 && queued.length >= options.minAugmentations && affordable.length === 0) {
       const neuroFlux = buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
       if (neuroFlux.count > 0) {
-        report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction} before installing.`);
+        const donated = neuroFlux.donated > 0 ? ` after donating $${ns.format.number(neuroFlux.donated)} for Daedalus reputation` : "";
+        report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction}${donated} before installing.`);
       }
       ns.rm(CLOUD_HOSTS_STATE_FILE);
       ns.tprintf("%s", `[bb:factions] Installing ${queued.length} queued augmentation(s); restarting ${RESTART_SCRIPT}.`);
@@ -90,7 +92,8 @@ export async function main(ns) {
         ? { count: 0, faction: "" }
         : buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
       if (neuroFlux.count > 0) {
-        report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction}; no other augmentations remain.`);
+        const donated = neuroFlux.donated > 0 ? ` after donating $${ns.format.number(neuroFlux.donated)} for Daedalus reputation` : "";
+        report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction}${donated}; no other augmentations remain.`);
       } else if (!options.quiet) {
         const status = waitingForTianDiHui
           ? `Reserving $${ns.format.number(tianDiHui.moneyReserve)} to join Tian Di Hui.`
@@ -333,13 +336,26 @@ function buyNeuroFluxGovernor(ns, factions, moneyBuffer) {
   const sellers = factions
     .filter((faction) => ns.singularity.getAugmentationsFromFaction(faction).includes(NEUROFLUX_GOVERNOR))
     .sort((left, right) => ns.singularity.getFactionRep(right) - ns.singularity.getFactionRep(left));
-  const result = { count: 0, faction: sellers[0] || "" };
+  // Daedalus can sell every NeuroFlux level and is the faction whose favor
+  // makes repeated donation-backed purchases most valuable late in a run.
+  const result = { count: 0, donated: 0, faction: sellers.includes(DAEDALUS) ? DAEDALUS : sellers[0] || "" };
 
   while (result.faction) {
     const price = ns.singularity.getAugmentationPrice(NEUROFLUX_GOVERNOR);
     const repRequired = ns.singularity.getAugmentationRepReq(NEUROFLUX_GOVERNOR);
     const availableMoney = ns.getServerMoneyAvailable("home") - moneyBuffer;
-    if (price > availableMoney || ns.singularity.getFactionRep(result.faction) < repRequired) break;
+    const missingRep = Math.max(0, repRequired - ns.singularity.getFactionRep(result.faction));
+    if (price > availableMoney) break;
+    if (missingRep > 0) {
+      if (result.faction !== DAEDALUS || !canDonateToFaction(ns, DAEDALUS)) break;
+
+      const donation = Math.ceil(donationAmountForRep(ns, missingRep, ns.getPlayer()));
+      // Keep enough cash for the level whose reputation this donation unlocks.
+      if (!Number.isFinite(donation) || donation + price > availableMoney) break;
+      ns.singularity.stopAction();
+      if (!ns.singularity.donateToFaction(DAEDALUS, donation)) break;
+      result.donated += donation;
+    }
     if (!ns.singularity.purchaseAugmentation(result.faction, NEUROFLUX_GOVERNOR)) break;
     result.count += 1;
   }
