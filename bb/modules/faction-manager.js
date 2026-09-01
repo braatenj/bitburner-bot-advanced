@@ -77,15 +77,21 @@ export async function main(ns) {
       report(ns, options, `Bought ${bought.augmentation} from ${bought.faction}.`);
     } else if (donation) {
       report(ns, options, `Donated $${ns.format.number(donation.amount)} to ${donation.faction} for ${ns.format.number(donation.rep)} reputation.`);
+    } else if (!options.noInstall && !waitingForTianDiHui && candidates.length === 0 && queued.length > 0) {
+      const neuroFlux = buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
+      if (neuroFlux.count > 0) {
+        const donated = neuroFlux.donated > 0 ? ` after donating $${ns.format.number(neuroFlux.donated)} for Daedalus reputation` : "";
+        report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction}${donated} before installing.`);
+      }
+      installQueuedAugmentations(ns);
+      return;
     } else if (!options.noInstall && !waitingForTianDiHui && tianCandidates.length === 0 && queued.length >= options.minAugmentations && affordable.length === 0) {
       const neuroFlux = buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
       if (neuroFlux.count > 0) {
         const donated = neuroFlux.donated > 0 ? ` after donating $${ns.format.number(neuroFlux.donated)} for Daedalus reputation` : "";
         report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction}${donated} before installing.`);
       }
-      ns.rm(CLOUD_HOSTS_STATE_FILE);
-      ns.tprintf("%s", `[bb:factions] Installing ${queued.length} queued augmentation(s); restarting ${RESTART_SCRIPT}.`);
-      ns.singularity.installAugmentations(RESTART_SCRIPT);
+      installQueuedAugmentations(ns);
       return;
     } else if (candidates.length === 0) {
       const neuroFlux = waitingForTianDiHui
@@ -114,6 +120,14 @@ export async function main(ns) {
     writeState(ns, { affordable, backdoor, candidates, joined, members, options, queued, tianDiHui });
     await ns.sleep(options.pollMs);
   }
+}
+
+/** Restarts through the bootstrapper after accounting for all queued purchases. */
+function installQueuedAugmentations(ns) {
+  const count = queuedAugmentations(ns).length;
+  ns.rm(CLOUD_HOSTS_STATE_FILE);
+  ns.tprintf("%s", `[bb:factions] Installing ${count} queued augmentation(s); restarting ${RESTART_SCRIPT}.`);
+  ns.singularity.installAugmentations(RESTART_SCRIPT);
 }
 
 /** Travels to an eligible city and protects the cash needed to join Tian Di Hui. */
