@@ -12,7 +12,7 @@
  * Options:
  * --factions NAME[,NAME]      Restrict the route to these factions.
  * --augmentation-focus TAGS   Comma-separated stat priorities.
- * --min-augmentations N       Install after this many queued augs (default 3).
+ * --min-augmentations N       Exit after this many queued augs (default 10).
  * --augmentation-money-buffer MONEY  Cash never spent on augmentations.
  * --poll MS                   Evaluation interval (default 60000).
  * The manager travels to join Tian Di Hui when it is in the route, reserves
@@ -77,15 +77,7 @@ export async function main(ns) {
       report(ns, options, `Bought ${bought.augmentation} from ${bought.faction}.`);
     } else if (donation) {
       report(ns, options, `Donated $${ns.format.number(donation.amount)} to ${donation.faction} for ${ns.format.number(donation.rep)} reputation.`);
-    } else if (!options.noInstall && !waitingForTianDiHui && candidates.length === 0 && queued.length > 0) {
-      const neuroFlux = buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
-      if (neuroFlux.count > 0) {
-        const donated = neuroFlux.donated > 0 ? ` after donating $${ns.format.number(neuroFlux.donated)} for Daedalus reputation` : "";
-        report(ns, options, `Bought ${neuroFlux.count} NeuroFlux Governor level(s) from ${neuroFlux.faction}${donated} before installing.`);
-      }
-      installQueuedAugmentations(ns);
-      return;
-    } else if (!options.noInstall && !waitingForTianDiHui && tianCandidates.length === 0 && queued.length >= options.minAugmentations && affordable.length === 0) {
+    } else if (!options.noInstall && !waitingForTianDiHui && tianCandidates.length === 0 && queued.length >= options.minAugmentations) {
       const neuroFlux = buyNeuroFluxGovernor(ns, members, options.moneyBuffer);
       if (neuroFlux.count > 0) {
         const donated = neuroFlux.donated > 0 ? ` after donating $${ns.format.number(neuroFlux.donated)} for Daedalus reputation` : "";
@@ -155,7 +147,7 @@ function parseArgs(rawArgs) {
   const options = {
     factions: [],
     focus: ["hacking"],
-    minAugmentations: 3,
+    minAugmentations: 10,
     moneyBuffer: 0,
     noBackdoors: false,
     noInstall: false,
